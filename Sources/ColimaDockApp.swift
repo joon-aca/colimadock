@@ -111,9 +111,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let startItem = NSMenuItem(title: "Start Colima", action: #selector(startVM), keyEquivalent: "")
+        for lock in runtime.staleDiskLocks {
+            addDisabledItem("⚠︎ Leftover lock on disk \(lock.disk) will block starting", to: menu)
+        }
+
+        addStartVMItems(to: menu)
+    }
+
+    /// Start always clears stale locks first (see ColimaRuntime.startVM); the label just says so.
+    private func addStartVMItems(to menu: NSMenu) {
+        let hasStaleLocks = !runtime.staleDiskLocks.isEmpty
+        let lockNoun = runtime.staleDiskLocks.count > 1 ? "Locks" : "Lock"
+
+        let startItem = NSMenuItem(
+            title: hasStaleLocks ? "Clear \(lockNoun) & Start Colima" : "Start Colima",
+            action: #selector(startVM),
+            keyEquivalent: ""
+        )
         startItem.target = self
         menu.addItem(startItem)
+
+        if hasStaleLocks {
+            let clearItem = NSMenuItem(title: "Clear \(lockNoun) Only", action: #selector(clearStaleDiskLocks), keyEquivalent: "")
+            clearItem.target = self
+            menu.addItem(clearItem)
+        }
     }
 
     private func menuItem(for container: Container) -> NSMenuItem {
@@ -183,9 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopItem.target = self
             submenu.addItem(stopItem)
         } else {
-            let startItem = NSMenuItem(title: "Start Colima", action: #selector(startVM), keyEquivalent: "")
-            startItem.target = self
-            submenu.addItem(startItem)
+            addStartVMItems(to: submenu)
         }
 
         let item = NSMenuItem(title: "Colima VM", action: nil, keyEquivalent: "")
@@ -213,6 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopVM() {
         runtime.stopVM()
+    }
+
+    @objc private func clearStaleDiskLocks() {
+        runtime.clearStaleDiskLocks()
     }
 
     @objc private func startContainer(_ sender: NSMenuItem) {

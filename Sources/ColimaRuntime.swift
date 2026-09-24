@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum RuntimeStatus: Equatable {
     case running
@@ -124,6 +125,30 @@ struct ContainerStats: Equatable {
     let pids: String
 }
 
+/// A Lima disk whose `in_use_by` lock names an instance that is not running.
+/// Lima leaves these behind when a VM is killed (crash, sleep, force quit), and
+/// the next `colima start` then dies with "failed to run attach disk ..., in use by instance ...".
+struct StaleDiskLock: Equatable {
+    let disk: String
+    let holder: String
+    let holderStatus: String?
+
+    var displayName: String {
+        "\(disk) (held by \(holder), \(holderStatus ?? "missing"))"
+    }
+
+    /// A lock is stale only when its holder is gone or cleanly Stopped. A holder that is
+    /// Running, Broken, or anything else may still own the disk, so it is never touched.
+    static func find(disks: [(name: String, holder: String)], instanceStatuses: [String: String]) -> [StaleDiskLock] {
+        disks.compactMap { disk in
+            guard !disk.holder.isEmpty else { return nil }
+            let status = instanceStatuses[disk.holder]
+            guard status == nil || status == "Stopped" else { return nil }
+            return StaleDiskLock(disk: disk.name, holder: disk.holder, holderStatus: status)
+        }
+    }
+}
+
 struct Container: Identifiable, Equatable {
     let id: String
     let shortID: String
@@ -149,9 +174,13 @@ final class ColimaRuntime: ObservableObject {
     @Published private(set) var containers: [Container] = []
     @Published private(set) var isLoading = true
     @Published private(set) var lastError: String?
+    @Published private(set) var staleDiskLocks: [StaleDiskLock] = []
 
     private let colimaPath: String
     private let dockerPath: String
+    private let limactlPath: String
+    private let limaHome: String
+    private let logger = Logger(subsystem: "dev.joon.ColimaDock", category: "locks")
     private var refreshTimer: Timer?
     private var transitioningContainers = Set<String>()
 
@@ -166,6 +195,9 @@ final class ColimaRuntime: ObservableObject {
     init() {
         self.colimaPath = Self.findExecutable("colima")
         self.dockerPath = Self.findExecutable("docker")
+        self.limactlPath = Self.findExecutable("limactl")
+        self.limaHome = (Self.colimaHome() as NSString).appendingPathComponent("_lima")
+        logger.info("Using limactl=\(self.limactlPath, privacy: .public) LIMA_HOME=\(self.limaHome, privacy: .public)")
         startRefreshing()
     }
 
@@ -194,6 +226,13 @@ final class ColimaRuntime: ObservableObject {
         vm.status = .starting
 
         Task {
+            // A stale disk lock guarantees `colima start` fails, so clearing it is part of starting.
+            if let unlockError = await unlockStaleDiskLocks() {
+                lastError = unlockError
+                await refreshSnapshot()
+                return
+            }
+
             let result = await runCommand([colimaPath, "start"])
             if result.exitCode != 0 {
                 lastError = cleanError(result.output)
@@ -217,6 +256,15 @@ final class ColimaRuntime: ObservableObject {
                 lastError = cleanError(result.output)
             }
             transitioningContainers.removeAll()
+            await refreshSnapshot()
+        }
+    }
+
+    func clearStaleDiskLocks() {
+        guard !vm.status.isTransitioning, !staleDiskLocks.isEmpty else { return }
+
+        Task {
+            lastError = await unlockStaleDiskLocks()
             await refreshSnapshot()
         }
     }
@@ -270,10 +318,13 @@ final class ColimaRuntime: ObservableObject {
 
         guard parsedVM.status.isRunning else {
             containers = []
+            // Only a cleanly stopped VM can have a provably stale lock; a running VM owns its disk.
+            staleDiskLocks = parsedVM.status == .stopped ? await detectStaleDiskLocks() : []
             lastError = nil
             isLoading = false
             return
         }
+        staleDiskLocks = []
 
         let containersResult = await runCommand([
             dockerPath,
@@ -309,6 +360,68 @@ final class ColimaRuntime: ObservableObject {
         }
         lastError = nil
         isLoading = false
+    }
+
+    /// Asks Lima which disks are locked and whether each lock holder is actually alive.
+    /// Lima's own instance status already does the pid-file liveness checks, so we trust it
+    /// rather than second-guessing pid files. Any query failure yields no stale locks (fail safe).
+    private func detectStaleDiskLocks() async -> [StaleDiskLock] {
+        let disksResult = await runLimactl(["disk", "ls", "--json"])
+        guard disksResult.exitCode == 0 else {
+            logger.error("limactl disk ls failed (\(disksResult.exitCode)): \(disksResult.output, privacy: .public)")
+            return []
+        }
+
+        let disks = jsonLines(disksResult.output).compactMap { json -> (name: String, holder: String)? in
+            guard let name = json["name"] as? String else { return nil }
+            return (name, json["instance"] as? String ?? "")
+        }
+        guard disks.contains(where: { !$0.holder.isEmpty }) else { return [] }
+
+        let instancesResult = await runLimactl(["list", "--json"])
+        guard instancesResult.exitCode == 0 else {
+            logger.error("limactl list failed (\(instancesResult.exitCode)): \(instancesResult.output, privacy: .public)")
+            return []
+        }
+
+        var instanceStatuses: [String: String] = [:]
+        for json in jsonLines(instancesResult.output) {
+            if let name = json["name"] as? String, let status = json["status"] as? String {
+                instanceStatuses[name] = status
+            }
+        }
+
+        for disk in disks where !disk.holder.isEmpty {
+            logger.info("Disk \(disk.name, privacy: .public) locked by \(disk.holder, privacy: .public) status=\(instanceStatuses[disk.holder] ?? "missing", privacy: .public)")
+        }
+
+        let stale = StaleDiskLock.find(disks: disks, instanceStatuses: instanceStatuses)
+        for lock in stale {
+            logger.notice("Stale disk lock: \(lock.displayName, privacy: .public)")
+        }
+        return stale
+    }
+
+    /// Re-detects immediately before unlocking so a VM started elsewhere in the meantime
+    /// never has its live lock pulled. Returns an error message on failure, nil on success.
+    private func unlockStaleDiskLocks() async -> String? {
+        let stale = await detectStaleDiskLocks()
+        guard !stale.isEmpty else { return nil }
+
+        let disks = stale.map(\.disk)
+        logger.notice("Unlocking stale disks: \(disks.joined(separator: ", "), privacy: .public)")
+        let result = await runLimactl(["disk", "unlock"] + disks)
+        guard result.exitCode == 0 else {
+            logger.error("limactl disk unlock failed (\(result.exitCode)): \(result.output, privacy: .public)")
+            return "Could not clear stale disk lock: " + (cleanError(result.output) ?? "limactl exited \(result.exitCode)")
+        }
+
+        staleDiskLocks = []
+        return nil
+    }
+
+    private func runLimactl(_ arguments: [String]) async -> (output: String, exitCode: Int32) {
+        await runCommand([limactlPath] + arguments, environmentOverrides: ["LIMA_HOME": limaHome])
     }
 
     private func fetchStats(containerIDs: [String]) async -> [String: ContainerStats] {
@@ -413,6 +526,12 @@ final class ColimaRuntime: ObservableObject {
         }
     }
 
+    private func jsonLines(_ output: String) -> [[String: Any]] {
+        output.components(separatedBy: .newlines).compactMap { line in
+            line.isEmpty ? nil : decodeJSONObject(line)
+        }
+    }
+
     private func decodeJSONObject(_ line: String) -> [String: Any]? {
         guard let data = line.data(using: .utf8) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -439,6 +558,27 @@ final class ColimaRuntime: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// Mirrors Colima's own config dir resolution: $COLIMA_HOME, then ~/.colima,
+    /// then $XDG_CONFIG_HOME/colima (default ~/.config/colima).
+    private static func colimaHome() -> String {
+        let environment = ProcessInfo.processInfo.environment
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser.path
+
+        if let dir = environment["COLIMA_HOME"], !dir.isEmpty, fileManager.fileExists(atPath: dir) {
+            return dir
+        }
+
+        let dotColima = (home as NSString).appendingPathComponent(".colima")
+        if fileManager.fileExists(atPath: dotColima) {
+            return dotColima
+        }
+
+        let xdgConfig = environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? (home as NSString).appendingPathComponent(".config")
+        return (xdgConfig as NSString).appendingPathComponent("colima")
+    }
+
     private static func findExecutable(_ name: String) -> String {
         let possiblePaths = [
             "/opt/homebrew/bin/\(name)",
@@ -453,7 +593,7 @@ final class ColimaRuntime: ObservableObject {
         return name
     }
 
-    private func runCommand(_ arguments: [String]) async -> (output: String, exitCode: Int32) {
+    private func runCommand(_ arguments: [String], environmentOverrides: [String: String] = [:]) async -> (output: String, exitCode: Int32) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -466,6 +606,7 @@ final class ColimaRuntime: ObservableObject {
 
                 var environment = ProcessInfo.processInfo.environment
                 environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+                environment.merge(environmentOverrides) { _, override in override }
                 process.environment = environment
 
                 do {
