@@ -41,12 +41,24 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 - [Colima](https://github.com/abiosoft/colima)
 - Docker CLI configured for Colima
 
+## Install
+
+Download the latest `ColimaDock-x.y.z.zip` from [Releases](https://github.com/joon-aca/colimadock/releases), unzip it, and drag `ColimaDock.app` to `/Applications`. Releases are universal (Apple Silicon + Intel), signed with Developer ID, and notarized, so it opens without Gatekeeper complaints.
+
 ## Build
 
 ```bash
-swift build -c release
-./build-app.sh
-open ColimaDock.app
+make run
 ```
 
-The app is a plain SwiftPM/AppKit menu bar app. No Electron, no background service, no special permissions dance.
+Builds `ColimaDock.app` for this Mac and launches it. The app is a plain SwiftPM/AppKit menu bar app. No Electron, no background service, no special permissions dance.
+
+## Release
+
+```bash
+make release VERSION=0.1.0
+```
+
+Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.1.0`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.1.0` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
+
+One-time setup: notarization credentials live in your keychain, never in the repo. `make release` prints the exact `xcrun notarytool store-credentials` command if they are missing.
