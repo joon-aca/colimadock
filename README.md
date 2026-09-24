@@ -23,6 +23,7 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 - Shows snapshot container stats for running containers
 - Starts and stops the default Colima VM from a secondary menu
 - Detects stale Lima disk locks left by a killed VM (the "in use by instance" start failure) and clears them, on its own or as part of starting
+- Spots leftover Colima/Lima background processes that nothing tracks anymore (their pid file is gone) and stops them
 - Refreshes every 5 seconds
 
 ## What it does not do

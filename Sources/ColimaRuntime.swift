@@ -175,11 +175,13 @@ final class ColimaRuntime: ObservableObject {
     @Published private(set) var isLoading = true
     @Published private(set) var lastError: String?
     @Published private(set) var staleDiskLocks: [StaleDiskLock] = []
+    @Published private(set) var orphanedProcesses: [OrphanedProcess] = []
+    @Published private(set) var stoppingOrphans = Set<pid_t>()
 
     private let colimaPath: String
     private let dockerPath: String
     private let limactlPath: String
-    private let limaHome: String
+    private let paths: OrphanedProcessScanner.Paths
     private let logger = Logger(subsystem: "dev.joon.ColimaDock", category: "locks")
     private var refreshTimer: Timer?
     private var transitioningContainers = Set<String>()
@@ -196,8 +198,12 @@ final class ColimaRuntime: ObservableObject {
         self.colimaPath = Self.findExecutable("colima")
         self.dockerPath = Self.findExecutable("docker")
         self.limactlPath = Self.findExecutable("limactl")
-        self.limaHome = (Self.colimaHome() as NSString).appendingPathComponent("_lima")
-        logger.info("Using limactl=\(self.limactlPath, privacy: .public) LIMA_HOME=\(self.limaHome, privacy: .public)")
+        let colimaHome = Self.colimaHome()
+        self.paths = OrphanedProcessScanner.Paths(
+            colimaHome: colimaHome,
+            limaHome: (colimaHome as NSString).appendingPathComponent("_lima")
+        )
+        logger.info("Using limactl=\(self.limactlPath, privacy: .public) COLIMA_HOME=\(self.paths.colimaHome, privacy: .public) LIMA_HOME=\(self.paths.limaHome, privacy: .public)")
         startRefreshing()
     }
 
@@ -226,9 +232,14 @@ final class ColimaRuntime: ObservableObject {
         vm.status = .starting
 
         Task {
-            // A stale disk lock guarantees `colima start` fails, so clearing it is part of starting.
-            if let unlockError = await unlockStaleDiskLocks() {
-                lastError = unlockError
+            // Orphans first: an orphaned hostagent can be what still holds the disk lock.
+            // Then a stale disk lock guarantees `colima start` fails, so clearing it is part of starting.
+            var cleanupError = await stopOrphanedProcesses(orphanedProcesses)
+            if cleanupError == nil {
+                cleanupError = await unlockStaleDiskLocks()
+            }
+            if let cleanupError {
+                lastError = cleanupError
                 await refreshSnapshot()
                 return
             }
@@ -269,6 +280,22 @@ final class ColimaRuntime: ObservableObject {
         }
     }
 
+    func stopOrphanedProcess(pid: pid_t) {
+        guard let orphan = orphanedProcesses.first(where: { $0.pid == pid }) else { return }
+        Task {
+            lastError = await stopOrphanedProcesses([orphan])
+            await refreshSnapshot()
+        }
+    }
+
+    func stopAllOrphanedProcesses() {
+        guard !orphanedProcesses.isEmpty else { return }
+        Task {
+            lastError = await stopOrphanedProcesses(orphanedProcesses)
+            await refreshSnapshot()
+        }
+    }
+
     func startContainer(id: String) {
         guard let container = containers.first(where: { $0.id == id || $0.shortID == id }),
               container.state.canStart else { return }
@@ -304,6 +331,9 @@ final class ColimaRuntime: ObservableObject {
     }
 
     private func refreshSnapshot() async {
+        // Orphans are independent of VM state: one can outlive a stop, or sit beside a running VM.
+        orphanedProcesses = await scanOrphanedProcesses()
+
         let vmResult = await runCommand([colimaPath, "ls", "--json"])
         guard vmResult.exitCode == 0 else {
             vm = ColimaVM(profile: "default", status: .unknown("Colima unavailable"), arch: "Unknown", cpus: 0, memory: 0, disk: 0)
@@ -420,8 +450,39 @@ final class ColimaRuntime: ObservableObject {
         return nil
     }
 
+    private func scanOrphanedProcesses() async -> [OrphanedProcess] {
+        let paths = paths
+        let orphans = await Task.detached(priority: .utility) {
+            OrphanedProcessScanner.scan(paths: paths)
+        }.value
+
+        for orphan in orphans {
+            logger.notice("Orphaned process: \(orphan.displayName, privacy: .public), \(orphan.reason, privacy: .public) (\(orphan.pidFile, privacy: .public)): \(orphan.command, privacy: .public)")
+        }
+        return orphans
+    }
+
+    /// Returns the first error message, or nil when every orphan is gone.
+    private func stopOrphanedProcesses(_ orphans: [OrphanedProcess]) async -> String? {
+        var firstError: String?
+        for orphan in orphans where !stoppingOrphans.contains(orphan.pid) {
+            stoppingOrphans.insert(orphan.pid)
+            logger.notice("Stopping orphaned process \(orphan.displayName, privacy: .public)")
+            let error = await OrphanedProcessScanner.terminate(orphan, paths: paths)
+            stoppingOrphans.remove(orphan.pid)
+
+            if let error {
+                logger.error("\(error, privacy: .public)")
+                firstError = firstError ?? error
+            } else {
+                logger.notice("Orphaned process \(orphan.displayName, privacy: .public) is gone")
+            }
+        }
+        return firstError
+    }
+
     private func runLimactl(_ arguments: [String]) async -> (output: String, exitCode: Int32) {
-        await runCommand([limactlPath] + arguments, environmentOverrides: ["LIMA_HOME": limaHome])
+        await runCommand([limactlPath] + arguments, environmentOverrides: ["LIMA_HOME": paths.limaHome])
     }
 
     private func fetchStats(containerIDs: [String]) async -> [String: ContainerStats] {

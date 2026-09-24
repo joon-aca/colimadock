@@ -87,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             addDisabledItem("Error: \(shortError(error))", to: menu)
         }
 
+        addOrphanedProcessItems(to: menu)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(vmMenuItem())
 
@@ -136,6 +138,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clearItem.target = self
             menu.addItem(clearItem)
         }
+    }
+
+    private func addOrphanedProcessItems(to menu: NSMenu) {
+        guard !runtime.orphanedProcesses.isEmpty else { return }
+
+        menu.addItem(NSMenuItem.separator())
+        addDisabledItem("⚠︎ Leftover Colima processes", to: menu)
+
+        for orphan in runtime.orphanedProcesses {
+            menu.addItem(menuItem(for: orphan))
+        }
+
+        if runtime.orphanedProcesses.count > 1 {
+            let stopAllItem = NSMenuItem(title: "Stop All Leftover Processes", action: #selector(stopAllOrphanedProcesses), keyEquivalent: "")
+            stopAllItem.target = self
+            stopAllItem.isEnabled = runtime.stoppingOrphans.isEmpty
+            menu.addItem(stopAllItem)
+        }
+    }
+
+    private func menuItem(for orphan: OrphanedProcess) -> NSMenuItem {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        let started = DateFormatter.localizedString(from: orphan.startDate, dateStyle: Calendar.current.isDateInToday(orphan.startDate) ? .none : .short, timeStyle: .short)
+        addDisabledItem("\(orphan.kind.purpose), left running since \(started)", to: submenu)
+        addDisabledItem("Colima lost track of it and won't stop it", to: submenu)
+
+        submenu.addItem(NSMenuItem.separator())
+        if runtime.stoppingOrphans.contains(orphan.pid) {
+            addDisabledItem("Stopping...", to: submenu)
+        } else {
+            let stopItem = NSMenuItem(title: "Stop", action: #selector(stopOrphanedProcess(_:)), keyEquivalent: "")
+            stopItem.target = self
+            stopItem.representedObject = NSNumber(value: orphan.pid)
+            submenu.addItem(stopItem)
+        }
+
+        let item = NSMenuItem(title: "  \(orphan.kind.title) (\(orphan.target))", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
     }
 
     private func menuItem(for container: Container) -> NSMenuItem {
@@ -237,6 +280,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func clearStaleDiskLocks() {
         runtime.clearStaleDiskLocks()
+    }
+
+    @objc private func stopOrphanedProcess(_ sender: NSMenuItem) {
+        guard let pid = (sender.representedObject as? NSNumber)?.int32Value else { return }
+        runtime.stopOrphanedProcess(pid: pid)
+    }
+
+    @objc private func stopAllOrphanedProcesses() {
+        runtime.stopAllOrphanedProcesses()
     }
 
     @objc private func startContainer(_ sender: NSMenuItem) {
