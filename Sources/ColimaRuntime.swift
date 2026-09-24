@@ -174,15 +174,36 @@ final class ColimaRuntime: ObservableObject {
     @Published private(set) var containers: [Container] = []
     @Published private(set) var isLoading = true
     @Published private(set) var lastError: String?
-    @Published private(set) var staleDiskLocks: [StaleDiskLock] = []
-    @Published private(set) var orphanedProcesses: [OrphanedProcess] = []
+    // Detection runs every refresh, so these log transitions, not every sighting.
+    @Published private(set) var staleDiskLocks: [StaleDiskLock] = [] {
+        didSet {
+            for lock in staleDiskLocks where !oldValue.contains(lock) {
+                logger.notice("Stale disk lock found: \(lock.displayName, privacy: .public)")
+            }
+            for lock in oldValue where !staleDiskLocks.contains(lock) {
+                logger.notice("Stale disk lock gone: \(lock.displayName, privacy: .public)")
+            }
+        }
+    }
+    @Published private(set) var orphanedProcesses: [OrphanedProcess] = [] {
+        didSet {
+            for orphan in orphanedProcesses where !oldValue.contains(orphan) {
+                logger.notice("Orphaned process found: \(orphan.displayName, privacy: .public), \(orphan.reason, privacy: .public) (\(orphan.pidFile, privacy: .public)): \(orphan.command, privacy: .public)")
+            }
+            for orphan in oldValue where !orphanedProcesses.contains(orphan) {
+                logger.notice("Orphaned process gone: \(orphan.displayName, privacy: .public)")
+            }
+        }
+    }
     @Published private(set) var stoppingOrphans = Set<pid_t>()
 
     private let colimaPath: String
     private let dockerPath: String
     private let limactlPath: String
     private let paths: OrphanedProcessScanner.Paths
-    private let logger = Logger(subsystem: "dev.joon.ColimaDock", category: "locks")
+    private let logger = Logger(subsystem: "dev.joon.ColimaDock", category: "cleanup")
+    /// The last limactl query failure logged, so a persistent failure is logged once.
+    private var loggedQueryFailure: String?
     private var refreshTimer: Timer?
     private var transitioningContainers = Set<String>()
 
@@ -398,7 +419,7 @@ final class ColimaRuntime: ObservableObject {
     private func detectStaleDiskLocks() async -> [StaleDiskLock] {
         let disksResult = await runLimactl(["disk", "ls", "--json"])
         guard disksResult.exitCode == 0 else {
-            logger.error("limactl disk ls failed (\(disksResult.exitCode)): \(disksResult.output, privacy: .public)")
+            noteQueryFailure("limactl disk ls failed (\(disksResult.exitCode)): \(disksResult.output)")
             return []
         }
 
@@ -406,13 +427,17 @@ final class ColimaRuntime: ObservableObject {
             guard let name = json["name"] as? String else { return nil }
             return (name, json["instance"] as? String ?? "")
         }
-        guard disks.contains(where: { !$0.holder.isEmpty }) else { return [] }
+        guard disks.contains(where: { !$0.holder.isEmpty }) else {
+            noteQueryFailure(nil)
+            return []
+        }
 
         let instancesResult = await runLimactl(["list", "--json"])
         guard instancesResult.exitCode == 0 else {
-            logger.error("limactl list failed (\(instancesResult.exitCode)): \(instancesResult.output, privacy: .public)")
+            noteQueryFailure("limactl list failed (\(instancesResult.exitCode)): \(instancesResult.output)")
             return []
         }
+        noteQueryFailure(nil)
 
         var instanceStatuses: [String: String] = [:]
         for json in jsonLines(instancesResult.output) {
@@ -421,15 +446,17 @@ final class ColimaRuntime: ObservableObject {
             }
         }
 
-        for disk in disks where !disk.holder.isEmpty {
-            logger.info("Disk \(disk.name, privacy: .public) locked by \(disk.holder, privacy: .public) status=\(instanceStatuses[disk.holder] ?? "missing", privacy: .public)")
-        }
+        return StaleDiskLock.find(disks: disks, instanceStatuses: instanceStatuses)
+    }
 
-        let stale = StaleDiskLock.find(disks: disks, instanceStatuses: instanceStatuses)
-        for lock in stale {
-            logger.notice("Stale disk lock: \(lock.displayName, privacy: .public)")
+    private func noteQueryFailure(_ failure: String?) {
+        guard failure != loggedQueryFailure else { return }
+        if let failure {
+            logger.error("\(failure, privacy: .public)")
+        } else {
+            logger.notice("limactl queries are succeeding again")
         }
-        return stale
+        loggedQueryFailure = failure
     }
 
     /// Re-detects immediately before unlocking so a VM started elsewhere in the meantime
@@ -452,14 +479,9 @@ final class ColimaRuntime: ObservableObject {
 
     private func scanOrphanedProcesses() async -> [OrphanedProcess] {
         let paths = paths
-        let orphans = await Task.detached(priority: .utility) {
+        return await Task.detached(priority: .utility) {
             OrphanedProcessScanner.scan(paths: paths)
         }.value
-
-        for orphan in orphans {
-            logger.notice("Orphaned process: \(orphan.displayName, privacy: .public), \(orphan.reason, privacy: .public) (\(orphan.pidFile, privacy: .public)): \(orphan.command, privacy: .public)")
-        }
-        return orphans
     }
 
     /// Returns the first error message, or nil when every orphan is gone.
@@ -474,8 +496,6 @@ final class ColimaRuntime: ObservableObject {
             if let error {
                 logger.error("\(error, privacy: .public)")
                 firstError = firstError ?? error
-            } else {
-                logger.notice("Orphaned process \(orphan.displayName, privacy: .public) is gone")
             }
         }
         return firstError
