@@ -265,7 +265,7 @@ final class ColimaRuntime: ObservableObject {
                 return
             }
 
-            let result = await runCommand([colimaPath, "start"])
+            let result = await runCommand([colimaPath, "start"], timeout: 180)
             if result.exitCode != 0 {
                 lastError = cleanError(result.output)
             }
@@ -283,7 +283,7 @@ final class ColimaRuntime: ObservableObject {
         }
 
         Task {
-            let result = await runCommand([colimaPath, "stop"])
+            let result = await runCommand([colimaPath, "stop"], timeout: 90)
             if result.exitCode != 0 {
                 lastError = cleanError(result.output)
             }
@@ -325,7 +325,7 @@ final class ColimaRuntime: ObservableObject {
         updateContainerTransition(id: container.id, isTransitioning: true)
 
         Task {
-            let result = await runCommand([dockerPath, "start", container.id])
+            let result = await runDocker(["start", container.id])
             if result.exitCode != 0 {
                 lastError = cleanError(result.output)
             }
@@ -342,7 +342,7 @@ final class ColimaRuntime: ObservableObject {
         updateContainerTransition(id: container.id, isTransitioning: true)
 
         Task {
-            let result = await runCommand([dockerPath, "stop", container.id])
+            let result = await runDocker(["stop", container.id])
             if result.exitCode != 0 {
                 lastError = cleanError(result.output)
             }
@@ -364,7 +364,7 @@ final class ColimaRuntime: ObservableObject {
             return
         }
 
-        let parsedVM = parseDefaultVM(vmResult.output)
+        let parsedVM = Self.parseVM(vmResult.output, profile: "default")
         vm = parsedVM
 
         guard parsedVM.status.isRunning else {
@@ -377,10 +377,10 @@ final class ColimaRuntime: ObservableObject {
         }
         staleDiskLocks = []
 
-        let containersResult = await runCommand([
-            dockerPath,
+        let containersResult = await runDocker([
             "ps",
             "-a",
+            "--no-trunc",
             "--format",
             "{{json .}}"
         ])
@@ -392,7 +392,7 @@ final class ColimaRuntime: ObservableObject {
             return
         }
 
-        var parsedContainers = parseContainers(containersResult.output)
+        var parsedContainers = Self.parseContainers(containersResult.output)
         let runningIDs = parsedContainers.filter { $0.state.isRunning }.map(\.id)
         let stats = await fetchStats(containerIDs: runningIDs)
 
@@ -501,15 +501,14 @@ final class ColimaRuntime: ObservableObject {
         return firstError
     }
 
-    private func runLimactl(_ arguments: [String]) async -> (output: String, exitCode: Int32) {
+    private func runLimactl(_ arguments: [String]) async -> CommandResult {
         await runCommand([limactlPath] + arguments, environmentOverrides: ["LIMA_HOME": paths.limaHome])
     }
 
     private func fetchStats(containerIDs: [String]) async -> [String: ContainerStats] {
         guard !containerIDs.isEmpty else { return [:] }
 
-        let result = await runCommand([
-            dockerPath,
+        let result = await runDocker([
             "stats",
             "--no-stream",
             "--format",
@@ -518,14 +517,14 @@ final class ColimaRuntime: ObservableObject {
 
         guard result.exitCode == 0 else { return [:] }
 
-        return parseStats(result.output)
+        return Self.parseStats(result.output)
     }
 
-    private func parseDefaultVM(_ output: String) -> ColimaVM {
+    static func parseVM(_ output: String, profile: String) -> ColimaVM {
         for line in output.components(separatedBy: .newlines) where !line.isEmpty {
             guard let json = decodeJSONObject(line),
                   let name = json["name"] as? String,
-                  name == "default" else {
+                  name == profile else {
                 continue
             }
 
@@ -539,10 +538,10 @@ final class ColimaRuntime: ObservableObject {
             )
         }
 
-        return ColimaVM(profile: "default", status: .missing, arch: "Unknown", cpus: 0, memory: 0, disk: 0)
+        return ColimaVM(profile: profile, status: .missing, arch: "Unknown", cpus: 0, memory: 0, disk: 0)
     }
 
-    private func parseContainers(_ output: String) -> [Container] {
+    static func parseContainers(_ output: String) -> [Container] {
         output.components(separatedBy: .newlines).compactMap { line in
             guard !line.isEmpty,
                   let json = decodeJSONObject(line),
@@ -560,12 +559,12 @@ final class ColimaRuntime: ObservableObject {
                 status: json["Status"] as? String ?? "Unknown",
                 ports: json["Ports"] as? String ?? "",
                 stats: nil,
-                isTransitioning: transitioningContainers.contains(id)
+                isTransitioning: false
             )
         }
     }
 
-    private func parseStats(_ output: String) -> [String: ContainerStats] {
+    static func parseStats(_ output: String) -> [String: ContainerStats] {
         var results: [String: ContainerStats] = [:]
 
         for line in output.components(separatedBy: .newlines) where !line.isEmpty {
@@ -599,7 +598,7 @@ final class ColimaRuntime: ObservableObject {
         }
     }
 
-    private func parseRuntimeStatus(_ value: String) -> RuntimeStatus {
+    private static func parseRuntimeStatus(_ value: String) -> RuntimeStatus {
         switch value.lowercased() {
         case "running": return .running
         case "stopped": return .stopped
@@ -609,16 +608,16 @@ final class ColimaRuntime: ObservableObject {
 
     private func jsonLines(_ output: String) -> [[String: Any]] {
         output.components(separatedBy: .newlines).compactMap { line in
-            line.isEmpty ? nil : decodeJSONObject(line)
+            line.isEmpty ? nil : Self.decodeJSONObject(line)
         }
     }
 
-    private func decodeJSONObject(_ line: String) -> [String: Any]? {
+    static func decodeJSONObject(_ line: String) -> [String: Any]? {
         guard let data = line.data(using: .utf8) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    private func parseUInt64(_ value: Any?) -> UInt64 {
+    private static func parseUInt64(_ value: Any?) -> UInt64 {
         if let value = value as? UInt64 {
             return value
         }
@@ -674,34 +673,14 @@ final class ColimaRuntime: ObservableObject {
         return name
     }
 
-    private func runCommand(_ arguments: [String], environmentOverrides: [String: String] = [:]) async -> (output: String, exitCode: Int32) {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                let pipe = Pipe()
+    private func runDocker(_ arguments: [String]) async -> CommandResult {
+        let socket = Self.colimaHome() + "/default/docker.sock"
+        return await runCommand([dockerPath, "--host", "unix://\(socket)"] + arguments)
+    }
 
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = arguments
-                process.standardOutput = pipe
-                process.standardError = pipe
-
-                var environment = ProcessInfo.processInfo.environment
-                environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                environment.merge(environmentOverrides) { _, override in override }
-                process.environment = environment
-
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-
-                    continuation.resume(returning: (output, process.terminationStatus))
-                } catch {
-                    continuation.resume(returning: ("Error: \(error.localizedDescription)", 1))
-                }
-            }
-        }
+    private func runCommand(
+        _ arguments: [String], environmentOverrides: [String: String] = [:], timeout: TimeInterval = 30
+    ) async -> CommandResult {
+        await CommandRunner.run(arguments, timeout: timeout, environmentOverrides: environmentOverrides)
     }
 }
