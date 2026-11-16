@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app for the thing you probably actually care about in Colima: the Docker containers.
 
-ColimaDock watches Colima's local `default` VM and any remote Colima profiles you add. List containers from the menu bar, start or stop them, and check their stats.
+ColimaDock discovers local Docker profiles and watches any remote Colima profiles you add. List containers from the menu bar and start or stop them from their profile's menu.
 
 ## Why another Colima menu bar app?
 
@@ -18,9 +18,9 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 
 ## What it does
 
-- Shows all Docker containers from the default Colima VM
+- Shows Docker containers from the default Colima VM and discovers other local Docker profiles, such as `komodo-dev`
 - Starts and stops individual containers
-- Shows snapshot container stats for running containers
+- Shows snapshot container stats for running containers in the default local profile and on demand for remote profiles
 - Starts and stops the default Colima VM from a secondary menu
 - Detects stale Lima disk locks left by a killed VM (the "in use by instance" start failure) and clears them, on its own or as part of starting
 - Spots leftover Colima/Lima background processes that nothing tracks anymore (their pid file is gone) and stops them
@@ -31,7 +31,7 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 
 ## What it does not do
 
-- Manage other local profiles or start and stop remote VMs
+- Start or stop non-default VMs
 - Replace Docker Desktop
 - Delete containers, images, or volumes
 - Open logs or shells
