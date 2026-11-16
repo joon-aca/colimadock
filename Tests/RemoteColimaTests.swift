@@ -89,6 +89,16 @@ final class RemoteColimaTests: XCTestCase {
         XCTAssertTrue(command.last?.contains("'unix:///Users/it'\\''s me/docker.sock'") == true)
     }
 
+    func testExistingConnectionsLoadWithNoForwardAndPortPairsStayOnLoopback() throws {
+        let data = Data(#"{"name":"Sparky","alias":"sparky-local","profile":"komodo-dev"}"#.utf8)
+        let existing = try JSONDecoder().decode(RemoteHost.self, from: data)
+        XCTAssertNil(existing.forwards)
+        let forwards = try XCTUnwrap(LocalForward.parse("29120:19120, 6379:6379"))
+        XCTAssertEqual(forwards.map(\.sshSpec), ["127.0.0.1:29120:127.0.0.1:19120", "127.0.0.1:6379:127.0.0.1:6379"])
+        XCTAssertNil(LocalForward.parse("29120:19120,29120:6379"))
+        XCTAssertNil(LocalForward.parse("29120::19120"))
+    }
+
     func testRunnerCapturesLargeOutputAndBoundsAnUnresponsiveCommand() async {
         let large = await CommandRunner.run(["/usr/bin/head", "-c", "131072", "/dev/zero"], timeout: 3)
         XCTAssertEqual(large.exitCode, 0)

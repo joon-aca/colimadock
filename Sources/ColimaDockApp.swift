@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let data = UserDefaults.standard.data(forKey: remoteDefaultsKey),
            let hosts = try? JSONDecoder().decode([RemoteHost].self, from: data) {
             for saved in hosts {
-                if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile) {
+                if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile, forwards: saved.forwards ?? []) {
                     addRemote(host)
                 }
             }
@@ -47,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.requestMenuUpdate() }
             .store(in: &cancellables)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        remotes.forEach { $0.tunnel.stop() }
     }
 
     private func requestMenuUpdate() {
@@ -274,6 +278,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for error in [remote.error, remote.operationError].compactMap({ $0 }) {
             addDisabledItem(shortError(error), to: submenu, detail: error)
         }
+        if let forwards = remote.host.forwards {
+            switch remote.tunnel.status {
+            case .off, .connecting:
+                addDisabledItem("Connecting localhost forwards…", to: submenu)
+            case .forwarding:
+                for forward in forwards {
+                    addDisabledItem("127.0.0.1:\(forward.localPort) → \(remote.host.name):\(forward.remotePort)", to: submenu)
+                }
+            case .retrying(let error):
+                addDisabledItem("Localhost forwards offline • retrying", to: submenu)
+                addDisabledItem(shortError(error), to: submenu, detail: error)
+            }
+        }
         if remote.state == .ready {
             submenu.addItem(.separator())
             if remote.containers.isEmpty {
@@ -420,7 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func editConnection(_ existing: RemoteColima?) {
         let alert = NSAlert()
         alert.messageText = existing == nil ? "Add Remote Colima" : "Edit Remote Colima"
-        alert.informativeText = "Use an SSH alias you’ve already connected to in Terminal. ColimaDock uses your SSH keys over LAN or a private network."
+        alert.informativeText = "Use a trusted SSH alias. Optional localhost forwards use local:remote port pairs, separated by commas."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
@@ -429,10 +446,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alias = NSTextField(string: existing?.host.alias ?? "")
         alias.placeholderString = "sparky-local"
         let profile = NSTextField(string: existing?.host.profile ?? "default")
+        let forwards = NSTextField(string: existing?.host.forwards?.map(\.label).joined(separator: ", ") ?? "")
+        forwards.placeholderString = "29120:19120"
         let form = NSGridView(views: [[NSTextField(labelWithString: "Name"), name],
                                       [NSTextField(labelWithString: "SSH alias"), alias],
-                                      [NSTextField(labelWithString: "Colima profile"), profile]])
-        for field in [name, alias, profile] { field.widthAnchor.constraint(equalToConstant: 210).isActive = true }
+                                      [NSTextField(labelWithString: "Colima profile"), profile],
+                                      [NSTextField(labelWithString: "Localhost forwards"), forwards]])
+        for field in [name, alias, profile, forwards] { field.widthAnchor.constraint(equalToConstant: 210).isActive = true }
         form.columnSpacing = 10
         form.rowSpacing = 8
         alert.accessoryView = form
@@ -441,9 +461,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         while alert.runModal() == .alertFirstButtonReturn {
             let trim = CharacterSet.whitespacesAndNewlines
+            guard let mappings = LocalForward.parse(forwards.stringValue) else {
+                alert.informativeText = "Enter local:remote port pairs such as 29120:19120, using each local port once (1024–65535)."
+                continue
+            }
             guard let host = RemoteHost(name: name.stringValue.trimmingCharacters(in: trim),
                                         alias: alias.stringValue.trimmingCharacters(in: trim),
-                                        profile: profile.stringValue.trimmingCharacters(in: trim)) else {
+                                        profile: profile.stringValue.trimmingCharacters(in: trim), forwards: mappings) else {
                 alert.informativeText = "Enter a name, an SSH alias (such as sparky-local), and a Colima profile (such as default)."
                 continue
             }
@@ -451,6 +475,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.informativeText = "This SSH alias and profile are already in the menu."
                 continue
             }
+            let otherPorts = Set(remotes.filter { $0 !== existing }.flatMap { $0.host.forwards ?? [] }.map(\.localPort))
+            guard otherPorts.isDisjoint(with: mappings.map(\.localPort)) else {
+                alert.informativeText = "Choose a local port that isn’t already assigned to another connection in ColimaDock."
+                continue
+            }
+            if existing?.host == host { break }
             if let existing { removeRemote(existing) }
             addRemote(host)
             saveRemotes()
@@ -462,12 +492,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let remote = RemoteColima(host: host)
         remotes.append(remote)
         remoteObservers[ObjectIdentifier(remote)] = remote.objectWillChange
+            .merge(with: remote.tunnel.objectWillChange)
             .sink { [weak self] _ in self?.requestMenuUpdate() }
         remote.startRefreshing()
+        remote.tunnel.start()
     }
 
     private func removeRemote(_ remote: RemoteColima) {
         remote.stopRefreshing()
+        remote.tunnel.stop()
         remoteObservers.removeValue(forKey: ObjectIdentifier(remote))
         remotes.removeAll { $0 === remote }
     }

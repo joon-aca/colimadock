@@ -5,8 +5,10 @@ struct RemoteHost: Codable, Equatable {
     let name: String
     let alias: String
     let profile: String
+    // Optional so existing saved connections still decode.
+    let forwards: [LocalForward]?
 
-    init?(name: String, alias: String, profile: String) {
+    init?(name: String, alias: String, profile: String, forwards: [LocalForward] = []) {
         func valid(_ token: String, allowed: String, limit: Int) -> Bool {
             let letters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
             return (1...limit).contains(token.utf8.count)
@@ -14,10 +16,13 @@ struct RemoteHost: Codable, Equatable {
                 && token.unicodeScalars.allSatisfy(letters.union(CharacterSet(charactersIn: allowed)).contains)
         }
         guard !name.isEmpty, name.count <= 48, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              valid(alias, allowed: ".-_", limit: 253), valid(profile, allowed: "-_", limit: 64) else { return nil }
+              valid(alias, allowed: ".-_", limit: 253), valid(profile, allowed: "-_", limit: 64),
+              forwards.allSatisfy({ $0.localPort >= 1024 && $0.remotePort > 0 }),
+              Set(forwards.map(\.localPort)).count == forwards.count else { return nil }
         self.name = name
         self.alias = alias
         self.profile = profile
+        self.forwards = forwards.isEmpty ? nil : forwards
     }
 
     func ssh(_ command: [String]) -> [String] {
@@ -26,13 +31,14 @@ struct RemoteHost: Codable, Equatable {
                            "PATH=\(CommandRunner.path)"]
         let remoteCommand = (environment + command).map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             .joined(separator: " ")
-        // Direct/private-network SSH only. Interactive proxy logins must stay in Terminal.
-        return ["/usr/bin/ssh", "-nT", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+        return Self.sshOptions + ["-o", "ControlMaster=no", "-o", "ControlPath=none", "--", alias, remoteCommand]
+    }
+
+    // Direct/private-network SSH only. Interactive proxy logins must stay in Terminal.
+    static let sshOptions = ["/usr/bin/ssh", "-nT", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "UpdateHostKeys=no", "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
                 "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ForwardAgent=no",
-                "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none",
-                "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "--", alias, remoteCommand]
-    }
+                "-o", "ClearAllForwardings=yes", "-o", "ProxyCommand=none", "-o", "ProxyJump=none"]
 
     static func dockerSocket(from statusOutput: String) -> String? {
         for line in statusOutput.components(separatedBy: .newlines) {
@@ -66,6 +72,7 @@ final class RemoteColima: ObservableObject {
 
     typealias Runner = @Sendable ([String], TimeInterval) async -> CommandResult
     let host: RemoteHost
+    let tunnel: RemoteTunnel
     @Published private(set) var state = State.checking
     @Published private(set) var vm: ColimaVM?
     @Published private(set) var containers: [Container] = []
@@ -92,6 +99,7 @@ final class RemoteColima: ObservableObject {
     init(host: RemoteHost, runner: @escaping Runner = { await CommandRunner.run($0, timeout: $1) }) {
         self.host = host
         self.runner = runner
+        self.tunnel = RemoteTunnel(host: host)
     }
 
     func startRefreshing() {
