@@ -6,7 +6,7 @@ Docker daemon, build caches, volumes, and checkouts used as bind mounts.
 | Need | From the MacBook | Destination |
 |---|---|---|
 | Run Docker commands | `docker --context sparky-komodo …` | The exact Docker Unix socket on Sparky |
-| Use a container service | SSH loopback port forward | A service port on Sparky's loopback |
+| Use a container service | Localhost port forward maintained by ColimaDock | A service port on Sparky's loopback |
 | Monitor containers | ColimaDock → Sparky | SSH, Colima status, and the same Unix socket |
 
 Use the existing `sparky-local` alias (`joon-m1.local`) in the office. Prefer
@@ -70,28 +70,26 @@ builds can transfer their build context to Sparky. Compose files that mount
 use an editor remote session or SSH to run those stacks there. Changing
 contexts won't move existing volumes or publish ports to the MacBook.
 
-Keep Komodo bound to Sparky loopback. Use a temporary local port for side-by-side
-testing, then use local port `19120` after the laptop copy stops if you want the
-old URL back:
+In ColimaDock, choose **Add Remote Colima…** and enter `Sparky`, `sparky-local`,
+and `komodo-dev`. Set **Localhost forwards** to `29120:19120` and open
+`http://127.0.0.1:29120`. This lets both Komodo instances run during the pilot.
+After the MacBook's copy stops, use `19120:19120` to get the old URL back.
+ColimaDock restores saved forwards when it opens and retries if SSH drops.
+Add it to macOS Login Items to start at sign-in. **Online** means the app
+reached Docker. The forwarding status separately tells you whether SSH is
+listening on the MacBook. Check the service with:
 
 ```sh
-ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
-  -L 127.0.0.1:29120:127.0.0.1:19120 sparky-local
-# In a second terminal, or open http://localhost:29120 in a browser:
 curl --fail --max-time 3 http://127.0.0.1:29120/version
 ```
 
-Closing this SSH session disconnects the forward; the stack stays up. For
-frequent use, add the `LocalForward` lines to a separate SSH alias such as
-`sparky-apps` and run `ssh -NT sparky-apps`. Keep forwards out of `sparky-local`
-so CLI sessions don't compete for ports. If moving MongoDB or Redis, forward
-`27017` or `6379` after stopping the corresponding local listener. Pick one
-authoritative database before directing writes to the remote copy.
-
-In ColimaDock, choose **Add Remote Colima…** and enter `Sparky`, `sparky-local`,
-`komodo-dev`. **Online** means the app reached the correct Docker socket.
-**Sample CPU & Memory** runs only when requested. The app can start and stop
-individual containers; supervise the VM itself with `launchctl` on Sparky.
+Keep Komodo bound to Sparky loopback. Add multiple forwards with commas. If
+moving MongoDB or Redis, use `27017:27017` or `6379:6379` after stopping the
+local listener and choosing the authoritative copy of the data. Clear the
+forward in the connection settings or quit ColimaDock to free the local port.
+For a one-off tunnel when ColimaDock is closed, use
+`ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:29120:127.0.0.1:19120 sparky-local`.
+Supervise the VM itself with `launchctl` on Sparky.
 
 ## 3. Keep it running
 

@@ -27,6 +27,7 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 - Refreshes the local profile every 5 seconds
 - Shows remote Colima profiles and their containers in a separate menu for each connection
 - Checks remote inventories about every 20 seconds, backs off after connection failures, and samples remote container stats on request
+- Keeps optional localhost port forwards connected while ColimaDock is running
 
 ## What it does not do
 
@@ -39,7 +40,13 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 
 ## Remote Colima
 
-Connect to the remote Mac in Terminal first and verify its SSH host key. Then choose **Add Remote Colima…** and enter a name, SSH alias, and remote profile. The app uses your existing SSH configuration and keys over the LAN or a private network. SSH must work with `BatchMode=yes`. The app polls independently of the active Docker context and does not run interactive SSH proxies.
+Choose **Add Remote Colima…** and enter a name, SSH alias, and remote profile. Use an SSH alias that already works over the LAN or a private network with `BatchMode=yes`. For a new host, verify and trust its SSH host key once. ColimaDock uses your existing SSH keys and polls independently of the active Docker context.
+
+Enter `29120:19120` in **Localhost forwards** to map this Mac's port 29120 to
+the remote Mac's port 19120. Add more pairs separated by commas. ColimaDock
+starts the tunnel when it opens, retries after a disconnect, and releases the
+ports when it quits or you clear the field. Add ColimaDock to macOS Login Items
+if you want your forwards to come up when you sign in.
 
 The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover.
 
