@@ -163,14 +163,9 @@ struct Container: Identifiable, Equatable {
 
 @MainActor
 final class ColimaRuntime: ObservableObject {
-    @Published private(set) var vm = ColimaVM(
-        profile: "default",
-        status: .unknown("Loading"),
-        arch: "Unknown",
-        cpus: 0,
-        memory: 0,
-        disk: 0
-    )
+    let profile: String
+    @Published private(set) var vm: ColimaVM
+    @Published private(set) var otherDockerProfiles: [String] = []
     @Published private(set) var containers: [Container] = []
     @Published private(set) var isLoading = true
     @Published private(set) var lastError: String?
@@ -206,6 +201,7 @@ final class ColimaRuntime: ObservableObject {
     private var loggedQueryFailure: String?
     private var refreshTimer: Timer?
     private var transitioningContainers = Set<String>()
+    private var isPolling = false
 
     var hasRunningContainer: Bool {
         containers.contains { $0.state.isRunning }
@@ -215,7 +211,9 @@ final class ColimaRuntime: ObservableObject {
         vm.status.isTransitioning || containers.contains { $0.isTransitioning }
     }
 
-    init() {
+    init(profile: String = "default") {
+        self.profile = profile
+        self.vm = ColimaVM(profile: profile, status: .unknown("Loading"), arch: "Unknown", cpus: 0, memory: 0, disk: 0)
         self.colimaPath = Self.findExecutable("colima")
         self.dockerPath = Self.findExecutable("docker")
         self.limactlPath = Self.findExecutable("limactl")
@@ -224,7 +222,9 @@ final class ColimaRuntime: ObservableObject {
             colimaHome: colimaHome,
             limaHome: (colimaHome as NSString).appendingPathComponent("_lima")
         )
-        logger.info("Using limactl=\(self.limactlPath, privacy: .public) COLIMA_HOME=\(self.paths.colimaHome, privacy: .public) LIMA_HOME=\(self.paths.limaHome, privacy: .public)")
+        if profile == "default" {
+            logger.info("Using limactl=\(self.limactlPath, privacy: .public) COLIMA_HOME=\(self.paths.colimaHome, privacy: .public) LIMA_HOME=\(self.paths.limaHome, privacy: .public)")
+        }
         startRefreshing()
     }
 
@@ -234,7 +234,8 @@ final class ColimaRuntime: ObservableObject {
 
     func startRefreshing() {
         refresh()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        let interval: TimeInterval = profile == "default" ? 5 : 15
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, !self.isTransitioning else { return }
                 self.refresh()
@@ -242,8 +243,16 @@ final class ColimaRuntime: ObservableObject {
         }
     }
 
+    func stopRefreshing() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
     func refresh() {
+        guard !isPolling else { return }
+        isPolling = true
         Task {
+            defer { isPolling = false }
             await refreshSnapshot()
         }
     }
@@ -318,8 +327,9 @@ final class ColimaRuntime: ObservableObject {
     }
 
     func startContainer(id: String) {
-        guard let container = containers.first(where: { $0.id == id || $0.shortID == id }),
-              container.state.canStart else { return }
+        guard vm.status.isRunning,
+              let container = containers.first(where: { $0.id == id || $0.shortID == id }),
+              !container.isTransitioning, container.state.canStart else { return }
 
         transitioningContainers.insert(container.id)
         updateContainerTransition(id: container.id, isTransitioning: true)
@@ -335,8 +345,9 @@ final class ColimaRuntime: ObservableObject {
     }
 
     func stopContainer(id: String) {
-        guard let container = containers.first(where: { $0.id == id || $0.shortID == id }),
-              container.state.canStop else { return }
+        guard vm.status.isRunning,
+              let container = containers.first(where: { $0.id == id || $0.shortID == id }),
+              !container.isTransitioning, container.state.canStop else { return }
 
         transitioningContainers.insert(container.id)
         updateContainerTransition(id: container.id, isTransitioning: true)
@@ -352,25 +363,33 @@ final class ColimaRuntime: ObservableObject {
     }
 
     private func refreshSnapshot() async {
-        // Orphans are independent of VM state: one can outlive a stop, or sit beside a running VM.
-        orphanedProcesses = await scanOrphanedProcesses()
+        if profile == "default" {
+            // Scan once for the Mac, regardless of VM state.
+            orphanedProcesses = await scanOrphanedProcesses()
+        }
 
         let vmResult = await runCommand([colimaPath, "ls", "--json"])
         guard vmResult.exitCode == 0 else {
-            vm = ColimaVM(profile: "default", status: .unknown("Colima unavailable"), arch: "Unknown", cpus: 0, memory: 0, disk: 0)
+            vm = ColimaVM(profile: profile, status: .unknown("Colima unavailable"), arch: "Unknown", cpus: 0, memory: 0, disk: 0)
             containers = []
             lastError = cleanError(vmResult.output)
             isLoading = false
             return
         }
 
-        let parsedVM = Self.parseVM(vmResult.output, profile: "default")
+        if profile == "default" {
+            let profiles = Self.parseOtherDockerProfiles(vmResult.output)
+            if profiles != otherDockerProfiles { otherDockerProfiles = profiles }
+        }
+        let parsedVM = Self.parseVM(vmResult.output, profile: profile)
         vm = parsedVM
 
         guard parsedVM.status.isRunning else {
             containers = []
             // Only a cleanly stopped VM can have a provably stale lock; a running VM owns its disk.
-            staleDiskLocks = parsedVM.status == .stopped ? await detectStaleDiskLocks() : []
+            if profile == "default" {
+                staleDiskLocks = parsedVM.status == .stopped ? await detectStaleDiskLocks() : []
+            }
             lastError = nil
             isLoading = false
             return
@@ -394,7 +413,7 @@ final class ColimaRuntime: ObservableObject {
 
         var parsedContainers = Self.parseContainers(containersResult.output)
         let runningIDs = parsedContainers.filter { $0.state.isRunning }.map(\.id)
-        let stats = await fetchStats(containerIDs: runningIDs)
+        let stats = profile == "default" ? await fetchStats(containerIDs: runningIDs) : [:]
 
         parsedContainers = parsedContainers.map { container in
             var updated = container
@@ -541,6 +560,16 @@ final class ColimaRuntime: ObservableObject {
         return ColimaVM(profile: profile, status: .missing, arch: "Unknown", cpus: 0, memory: 0, disk: 0)
     }
 
+    static func parseOtherDockerProfiles(_ output: String) -> [String] {
+        let names = output.components(separatedBy: .newlines).compactMap { line -> String? in
+            guard let json = decodeJSONObject(line), let name = json["name"] as? String,
+                  !name.isEmpty, !["default", ".", ".."].contains(name), !name.contains("/"),
+                  (json["runtime"] as? String ?? "docker") == "docker" else { return nil }
+            return name
+        }
+        return Set(names).sorted()
+    }
+
     static func parseContainers(_ output: String) -> [Container] {
         output.components(separatedBy: .newlines).compactMap { line in
             guard !line.isEmpty,
@@ -674,7 +703,7 @@ final class ColimaRuntime: ObservableObject {
     }
 
     private func runDocker(_ arguments: [String]) async -> CommandResult {
-        let socket = Self.colimaHome() + "/default/docker.sock"
+        let socket = Self.colimaHome() + "/\(profile)/docker.sock"
         return await runCommand([dockerPath, "--host", "unix://\(socket)"] + arguments)
     }
 

@@ -19,10 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let remote: RemoteColima
         let containerID: String
     }
+    private struct LocalTarget {
+        let profile: String
+        let containerID: String
+    }
 
     private var statusItem: NSStatusItem!
     private var runtime: ColimaRuntime!
     private var cancellables = Set<AnyCancellable>()
+    private var localProfiles: [String: ColimaRuntime] = [:]
+    private var localObservers: [String: AnyCancellable] = [:]
     private var remotes: [RemoteColima] = []
     private var remoteObservers: [ObjectIdentifier: AnyCancellable] = [:]
     private let remoteDefaultsKey = "remoteColimaHosts.v1"
@@ -46,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runtime.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.requestMenuUpdate() }
+            .store(in: &cancellables)
+        runtime.$otherDockerProfiles
+            .sink { [weak self] in self?.syncLocalProfiles($0) }
             .store(in: &cancellables)
     }
 
@@ -75,10 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbolName: String
         let accessibilityLabel: String
 
-        if runtime.isTransitioning || remotes.contains(where: \.isActing) {
+        if runtime.isTransitioning || localProfiles.values.contains(where: \.isTransitioning) || remotes.contains(where: \.isActing) {
             symbolName = "shippingbox.and.arrow.backward.fill"
             accessibilityLabel = "ColimaDock Transitioning"
-        } else if runtime.hasRunningContainer || remotes.contains(where: { $0.containers.contains(where: { $0.state.isRunning }) }) {
+        } else if runtime.hasRunningContainer || localProfiles.values.contains(where: \.hasRunningContainer)
+                    || remotes.contains(where: { $0.containers.contains(where: { $0.state.isRunning }) }) {
             symbolName = "shippingbox.fill"
             accessibilityLabel = "Containers Running"
         } else {
@@ -96,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        if !remotes.isEmpty { addDisabledItem("This Mac • default", to: menu) }
+        if !localProfiles.isEmpty || !remotes.isEmpty { addDisabledItem("This Mac • default", to: menu) }
 
         if runtime.isLoading {
             addDisabledItem("Loading...", to: menu)
@@ -119,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(vmMenuItem())
+        for profile in localProfiles.values.sorted(by: { $0.profile < $1.profile }) {
+            menu.addItem(localProfileMenuItem(profile))
+        }
 
         menu.addItem(NSMenuItem.separator())
         for remote in remotes { menu.addItem(remoteMenuItem(remote)) }
@@ -213,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func menuItem(for container: Container, remote: RemoteColima? = nil) -> NSMenuItem {
+    private func menuItem(for container: Container, remote: RemoteColima? = nil, localProfile: String? = nil) -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
 
@@ -245,6 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let remote {
                 addAction("Stop on \(remote.host.name)", #selector(stopContainer(_:)), to: submenu,
                           representedBy: Target(remote: remote, containerID: container.id))
+            } else if let localProfile {
+                addAction("Stop", #selector(stopContainer(_:)), to: submenu,
+                          representedBy: LocalTarget(profile: localProfile, containerID: container.id))
             } else {
                 addAction("Stop", #selector(stopContainer(_:)), to: submenu, representedBy: container.id)
             }
@@ -252,6 +268,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let remote {
                 addAction("Start on \(remote.host.name)", #selector(startContainer(_:)), to: submenu,
                           representedBy: Target(remote: remote, containerID: container.id))
+            } else if let localProfile {
+                addAction("Start", #selector(startContainer(_:)), to: submenu,
+                          representedBy: LocalTarget(profile: localProfile, containerID: container.id))
             } else {
                 addAction("Start", #selector(startContainer(_:)), to: submenu, representedBy: container.id)
             }
@@ -261,6 +280,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let statusIcon = container.state.isRunning ? "●" : "○"
         let item = NSMenuItem(title: "\(statusIcon) \(container.name)", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    private func syncLocalProfiles(_ names: [String]) {
+        let discovered = Set(names)
+        for name in Set(localProfiles.keys).subtracting(discovered) {
+            localProfiles.removeValue(forKey: name)?.stopRefreshing()
+            localObservers.removeValue(forKey: name)
+        }
+        for name in names where localProfiles[name] == nil {
+            let profile = ColimaRuntime(profile: name)
+            localProfiles[name] = profile
+            localObservers[name] = profile.objectWillChange
+                .sink { [weak self] _ in self?.requestMenuUpdate() }
+        }
+        requestMenuUpdate()
+    }
+
+    private func localProfileMenuItem(_ profile: ColimaRuntime) -> NSMenuItem {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        if profile.isLoading {
+            addDisabledItem("Loading…", to: submenu)
+        } else if let error = profile.lastError {
+            addDisabledItem(shortError(error), to: submenu, detail: error)
+        } else if !profile.vm.status.isRunning {
+            addDisabledItem(profile.vm.status.displayName, to: submenu)
+        } else if profile.containers.isEmpty {
+            addDisabledItem("No containers found", to: submenu)
+        } else {
+            for container in profile.containers {
+                submenu.addItem(menuItem(for: container, localProfile: profile.profile))
+            }
+        }
+
+        let item = NSMenuItem(title: "This Mac • \(profile.profile) • \(profile.vm.status.displayName)",
+                              action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
     }
@@ -395,6 +452,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             target.remote.changeContainer(id: target.containerID, start: true)
             return
         }
+        if let target = sender.representedObject as? LocalTarget {
+            localProfiles[target.profile]?.startContainer(id: target.containerID)
+            return
+        }
         guard let id = sender.representedObject as? String else { return }
         runtime.startContainer(id: id)
     }
@@ -404,12 +465,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             target.remote.changeContainer(id: target.containerID, start: false)
             return
         }
+        if let target = sender.representedObject as? LocalTarget {
+            localProfiles[target.profile]?.stopContainer(id: target.containerID)
+            return
+        }
         guard let id = sender.representedObject as? String else { return }
         runtime.stopContainer(id: id)
     }
 
     @objc private func refreshStatus() {
         runtime.refresh()
+        localProfiles.values.forEach { $0.refresh() }
         remotes.forEach { $0.refresh() }
     }
 

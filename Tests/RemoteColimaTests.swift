@@ -99,6 +99,17 @@ final class RemoteColimaTests: XCTestCase {
         XCTAssertNil(LocalForward.parse("29120::19120"))
     }
 
+    @MainActor
+    func testDiscoversLocalDockerProfilesAlongsideDefault() {
+        let output = """
+        {"name":"default","status":"Running","runtime":"docker"}
+        {"name":"komodo-dev","status":"Running","runtime":"docker"}
+        {"name":"other-docker","status":"Stopped","runtime":"docker"}
+        {"name":"kubernetes","status":"Running","runtime":"containerd"}
+        """
+        XCTAssertEqual(ColimaRuntime.parseOtherDockerProfiles(output), ["komodo-dev", "other-docker"])
+    }
+
     func testRunnerCapturesLargeOutputAndBoundsAnUnresponsiveCommand() async {
         let large = await CommandRunner.run(["/usr/bin/head", "-c", "131072", "/dev/zero"], timeout: 3)
         XCTAssertEqual(large.exitCode, 0)
