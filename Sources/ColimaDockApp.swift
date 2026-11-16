@@ -106,34 +106,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        if !localProfiles.isEmpty || !remotes.isEmpty { addDisabledItem("This Mac • default", to: menu) }
-
-        if runtime.isLoading {
-            addDisabledItem("Loading...", to: menu)
-        } else if !runtime.vm.status.isRunning {
-            addVMUnavailableItems(to: menu)
-        } else if runtime.containers.isEmpty {
-            addDisabledItem("No containers found", to: menu)
-        } else {
-            for container in runtime.containers {
-                menu.addItem(menuItem(for: container))
-            }
+        addSectionHeader("This Mac", to: menu)
+        addLocalProfile(runtime, to: menu)
+        menu.addItem(defaultVMMenuItem())
+        for profile in localProfiles.values.sorted(by: { $0.profile < $1.profile }) {
+            menu.addItem(.separator())
+            addLocalProfile(profile, to: menu)
         }
-
-        if let error = runtime.lastError {
-            menu.addItem(NSMenuItem.separator())
-            addDisabledItem("Error: \(shortError(error))", to: menu)
-        }
-
         addOrphanedProcessItems(to: menu)
 
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(vmMenuItem())
-        for profile in localProfiles.values.sorted(by: { $0.profile < $1.profile }) {
-            menu.addItem(localProfileMenuItem(profile))
-        }
-
-        menu.addItem(NSMenuItem.separator())
+        menu.addItem(.separator())
+        if !remotes.isEmpty { addSectionHeader("Remote Hosts", to: menu) }
         for remote in remotes { menu.addItem(remoteMenuItem(remote)) }
         addAction("Add Remote Colima…", #selector(addRemoteHost), to: menu)
 
@@ -150,28 +133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func addVMUnavailableItems(to menu: NSMenu) {
-        addDisabledItem("Colima VM default: \(runtime.vm.status.displayName)", to: menu)
-
-        if runtime.vm.status.isTransitioning {
-            addDisabledItem(runtime.vm.status.displayName, to: menu)
-            return
-        }
-
-        for lock in runtime.staleDiskLocks {
-            addDisabledItem("⚠︎ Leftover lock on disk \(lock.disk) will block starting", to: menu)
-        }
-
-        addStartVMItems(to: menu)
-    }
-
     /// Start always clears stale locks first (see ColimaRuntime.startVM); the label just says so.
     private func addStartVMItems(to menu: NSMenu) {
         let hasStaleLocks = !runtime.staleDiskLocks.isEmpty
         let lockNoun = runtime.staleDiskLocks.count > 1 ? "Locks" : "Lock"
 
         let startItem = NSMenuItem(
-            title: hasStaleLocks ? "Clear \(lockNoun) & Start Colima" : "Start Colima",
+            title: hasStaleLocks ? "Clear \(lockNoun) & Start default VM" : "Start default VM",
             action: #selector(startVM),
             keyEquivalent: ""
         )
@@ -299,27 +267,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestMenuUpdate()
     }
 
-    private func localProfileMenuItem(_ profile: ColimaRuntime) -> NSMenuItem {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        if profile.isLoading {
-            addDisabledItem("Loading…", to: submenu)
-        } else if let error = profile.lastError {
-            addDisabledItem(shortError(error), to: submenu, detail: error)
-        } else if !profile.vm.status.isRunning {
-            addDisabledItem(profile.vm.status.displayName, to: submenu)
-        } else if profile.containers.isEmpty {
-            addDisabledItem("No containers found", to: submenu)
-        } else {
-            for container in profile.containers {
-                submenu.addItem(menuItem(for: container, localProfile: profile.profile))
+    private func addLocalProfile(_ profile: ColimaRuntime, to menu: NSMenu) {
+        let status = profile.isLoading ? "Loading…" : profile.vm.status.displayName
+        addDisabledItem("\(profile.profile) • \(status)", to: menu)
+        if let error = profile.lastError {
+            addDisabledItem(shortError(error), to: menu, detail: error)
+        } else if profile.vm.status.isRunning {
+            if profile.containers.isEmpty {
+                addDisabledItem("No containers found", to: menu)
+            } else {
+                let localProfile = profile === runtime ? nil : profile.profile
+                for container in profile.containers {
+                    menu.addItem(menuItem(for: container, localProfile: localProfile))
+                }
             }
         }
-
-        let item = NSMenuItem(title: "This Mac • \(profile.profile) • \(profile.vm.status.displayName)",
-                              action: nil, keyEquivalent: "")
-        item.submenu = submenu
-        return item
     }
 
     private func remoteMenuItem(_ remote: RemoteColima) -> NSMenuItem {
@@ -375,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func vmMenuItem() -> NSMenuItem {
+    private func defaultVMMenuItem() -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
 
@@ -387,17 +349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addDisabledItem("Disk: \(runtime.vm.diskFormatted)", to: submenu)
 
         submenu.addItem(NSMenuItem.separator())
-        if runtime.vm.status.isTransitioning {
+        if runtime.isLoading || runtime.vm.status.isTransitioning {
             addDisabledItem(runtime.vm.status.displayName, to: submenu)
         } else if runtime.vm.status.isRunning {
-            let stopItem = NSMenuItem(title: "Stop Colima", action: #selector(stopVM), keyEquivalent: "")
+            let stopItem = NSMenuItem(title: "Stop default VM", action: #selector(stopVM), keyEquivalent: "")
             stopItem.target = self
             submenu.addItem(stopItem)
         } else {
+            for lock in runtime.staleDiskLocks {
+                addDisabledItem("⚠︎ Leftover lock on disk \(lock.disk) will block starting", to: submenu)
+            }
             addStartVMItems(to: submenu)
         }
 
-        let item = NSMenuItem(title: "Colima VM", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "VM Controls (default)", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
     }
@@ -407,6 +372,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.isEnabled = false
         item.toolTip = detail
         menu.addItem(item)
+    }
+
+    private func addSectionHeader(_ title: String, to menu: NSMenu) {
+        if #available(macOS 14.0, *) {
+            menu.addItem(.sectionHeader(title: title))
+        } else {
+            addDisabledItem(title, to: menu)
+        }
     }
 
     private func addAction(_ title: String, _ action: Selector, to menu: NSMenu,

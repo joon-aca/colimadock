@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app for the thing you probably actually care about in Colima: the Docker containers.
 
-ColimaDock discovers local Docker profiles and watches any remote Colima profiles you add. List containers from the menu bar and start or stop them from their profile's menu.
+ColimaDock groups local containers by profile under **This Mac** and shows configured remote connections under **Remote Hosts**. Open any container in the menu to start or stop it.
 
 ## Why another Colima menu bar app?
 
