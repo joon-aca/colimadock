@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app for the thing you probably actually care about in Colima: the Docker containers.
 
-ColimaDock watches Colima's `default` VM, then lists the Docker containers inside it directly from the menu bar. Start them, stop them, glance at their stats, and get back to whatever you were building.
+ColimaDock watches Colima's local `default` VM and any remote Colima profiles you add. List containers from the menu bar, start or stop them, and check their stats.
 
 ## Why another Colima menu bar app?
 
@@ -24,16 +24,24 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 - Starts and stops the default Colima VM from a secondary menu
 - Detects stale Lima disk locks left by a killed VM (the "in use by instance" start failure) and clears them, on its own or as part of starting
 - Spots leftover Colima/Lima background processes that nothing tracks anymore (their pid file is gone) and stops them
-- Refreshes every 5 seconds
+- Refreshes the local profile every 5 seconds
+- Shows remote Colima profiles and their containers in a separate menu for each connection
+- Checks remote inventories about every 20 seconds, backs off after connection failures, and samples remote container stats on request
 
 ## What it does not do
 
-- Manage multiple Colima profiles
+- Manage other local profiles or start and stop remote VMs
 - Replace Docker Desktop
 - Delete containers, images, or volumes
 - Open logs or shells
 
 At least for now, it is intentionally just a small status-and-start/stop tool.
+
+## Remote Colima
+
+Connect to the remote Mac in Terminal first and verify its SSH host key. Then choose **Add Remote Colima…** and enter a name, SSH alias, and remote profile. The app uses your existing SSH configuration and keys over the LAN or a private network. SSH must work with `BatchMode=yes`. The app polls independently of the active Docker context and does not run interactive SSH proxies.
+
+The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover.
 
 ## Requirements
 
