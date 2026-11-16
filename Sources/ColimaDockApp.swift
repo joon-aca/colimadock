@@ -269,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func addLocalProfile(_ profile: ColimaRuntime, to menu: NSMenu) {
         let status = profile.isLoading ? "Loading…" : profile.vm.status.displayName
-        addDisabledItem("\(profile.profile) • \(status)", to: menu)
+        addDisabledItem("\(profile.profile) VM (\(status))", to: menu)
         if let error = profile.lastError {
             addDisabledItem(shortError(error), to: menu, detail: error)
         } else if profile.vm.status.isRunning {
