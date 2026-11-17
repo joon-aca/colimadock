@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-@main
 struct ColimaDockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -10,6 +9,19 @@ struct ColimaDockApp: App {
         Settings {
             EmptyView()
         }
+    }
+}
+
+@main
+enum ColimaDockMain {
+    @MainActor static func main() {
+        let arguments = CommandLine.arguments.dropFirst()
+        if arguments.first == "docker" {
+            let dockerArguments = Array(arguments.dropFirst())
+            Task.detached { await DockerCommand.run(dockerArguments) }
+            dispatchMain()
+        }
+        ColimaDockApp.main()
     }
 }
 
@@ -31,15 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localObservers: [String: AnyCancellable] = [:]
     private var remotes: [RemoteColima] = []
     private var remoteObservers: [ObjectIdentifier: AnyCancellable] = [:]
-    private let remoteDefaultsKey = "remoteColimaHosts.v1"
+    private var dockerPreference: DockerPreference?
     private var menuUpdateQueued = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runtime = ColimaRuntime()
+        dockerPreference = DockerPreference.load(from: .standard)
         setupStatusItem()
         setupMenu()
 
-        if let data = UserDefaults.standard.data(forKey: remoteDefaultsKey),
+        if let data = UserDefaults.standard.data(forKey: RemoteHost.defaultsKey),
            let hosts = try? JSONDecoder().decode([RemoteHost].self, from: data) {
             for saved in hosts {
                 if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile, forwards: saved.forwards ?? []) {
@@ -119,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !remotes.isEmpty { addSectionHeader("Remote Hosts", to: menu) }
         for remote in remotes { menu.addItem(remoteMenuItem(remote)) }
         addAction("Add Remote Colima…", #selector(addRemoteHost), to: menu)
+        if !remotes.isEmpty { menu.addItem(dockerCommandsMenuItem()) }
 
         menu.addItem(NSMenuItem.separator())
         let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshStatus), keyEquivalent: "r")
@@ -131,6 +145,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    private func dockerCommandsMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Docker Commands", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let preferred = remotes.first { DockerPreference($0.host) == dockerPreference }
+        if let preferred {
+            addDisabledItem("Prefer \(preferred.host.name); fall back to this Mac’s \(preferred.host.profile) VM", to: submenu)
+        } else {
+            addDisabledItem("Choose a preferred host", to: submenu)
+        }
+        for remote in remotes {
+            addAction("\(remote.host.name) (\(remote.host.profile))", #selector(preferDockerHost(_:)),
+                      to: submenu, representedBy: remote)
+            submenu.items.last?.state = remote === preferred ? .on : .off
+        }
+        submenu.addItem(.separator())
+        addAction("Copy Docker Command Prefix", #selector(copyDockerCommand), to: submenu, enabled: preferred != nil)
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func preferDockerHost(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima,
+              remotes.contains(where: { $0 === remote }) else { return }
+        setDockerPreference(DockerPreference(remote.host))
+    }
+
+    private func setDockerPreference(_ preference: DockerPreference?) {
+        dockerPreference = preference
+        if let preference {
+            preference.save(to: .standard)
+        } else {
+            UserDefaults.standard.removeObject(forKey: DockerPreference.defaultsKey)
+        }
+        requestMenuUpdate()
+    }
+
+    @objc private func copyDockerCommand() {
+        guard let executable = Bundle.main.executablePath else { return }
+        let path = "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let clipboard = NSPasteboard.general
+        clipboard.clearContents()
+        clipboard.setString("\(path) docker -- ", forType: .string)
     }
 
     /// Start always clears stale locks first (see ColimaRuntime.startVM); the label just says so.
@@ -471,6 +530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func forgetRemoteHost(_ sender: NSMenuItem) {
         guard let remote = sender.representedObject as? RemoteColima, !remote.isActing else { return }
         removeRemote(remote)
+        if DockerPreference(remote.host) == dockerPreference { setDockerPreference(nil) }
         saveRemotes()
     }
 
@@ -521,7 +581,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             if existing?.host == host { break }
-            if let existing { removeRemote(existing) }
+            if let existing {
+                if DockerPreference(existing.host) == dockerPreference { setDockerPreference(DockerPreference(host)) }
+                removeRemote(existing)
+            }
             addRemote(host)
             saveRemotes()
             break
@@ -547,7 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func saveRemotes() {
         if let data = try? JSONEncoder().encode(remotes.map(\.host)) {
-            UserDefaults.standard.set(data, forKey: remoteDefaultsKey)
+            UserDefaults.standard.set(data, forKey: RemoteHost.defaultsKey)
         }
         requestMenuUpdate()
     }

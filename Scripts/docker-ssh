@@ -1,0 +1,6 @@
+#!/bin/sh
+# Docker's SSH helper finds this on PATH. Keep stdin open for docker dial-stdio.
+exec /usr/bin/ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+    -o ConnectTimeout=5 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 \
+    -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none \
+    -o ClearAllForwardings=yes -o ForwardAgent=no -o ForwardX11=no -o PermitLocalCommand=no "$@"

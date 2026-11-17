@@ -9,6 +9,7 @@ struct CommandResult: Sendable {
 
 enum CommandRunner {
     static let path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    static let dockerEnvironmentKeys = ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]
 
     static func run(
         _ arguments: [String], timeout: TimeInterval,
@@ -44,7 +45,7 @@ enum CommandRunner {
             process.standardError = writer
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = path
-            for key in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"] {
+            for key in dockerEnvironmentKeys {
                 environment.removeValue(forKey: key)
             }
             environment.merge(overrides) { _, override in override }

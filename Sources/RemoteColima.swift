@@ -2,6 +2,7 @@ import Combine
 import Foundation
 
 struct RemoteHost: Codable, Equatable {
+    static let defaultsKey = "remoteColimaHosts.v1"
     let name: String
     let alias: String
     let profile: String
@@ -26,9 +27,8 @@ struct RemoteHost: Codable, Equatable {
     }
 
     func ssh(_ command: [String]) -> [String] {
-        let environment = ["/usr/bin/env", "-u", "DOCKER_HOST", "-u", "DOCKER_CONTEXT",
-                           "-u", "DOCKER_TLS", "-u", "DOCKER_TLS_VERIFY", "-u", "DOCKER_CERT_PATH",
-                           "PATH=\(CommandRunner.path)"]
+        let environment = ["/usr/bin/env"] + CommandRunner.dockerEnvironmentKeys.flatMap { ["-u", $0] }
+            + ["PATH=\(CommandRunner.path)"]
         let remoteCommand = (environment + command).map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             .joined(separator: " ")
         return Self.sshOptions + ["-o", "ControlMaster=no", "-o", "ControlPath=none", "--", alias, remoteCommand]
@@ -38,7 +38,8 @@ struct RemoteHost: Codable, Equatable {
     static let sshOptions = ["/usr/bin/ssh", "-nT", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "UpdateHostKeys=no", "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
                 "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ForwardAgent=no",
-                "-o", "ClearAllForwardings=yes", "-o", "ProxyCommand=none", "-o", "ProxyJump=none"]
+                "-o", "ClearAllForwardings=yes", "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
+                "-o", "PermitLocalCommand=no", "-o", "ForwardX11=no"]
 
     static func dockerSocket(from statusOutput: String) -> String? {
         for line in statusOutput.components(separatedBy: .newlines) {
