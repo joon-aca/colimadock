@@ -41,7 +41,7 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 
 ## Remote Colima
 
-Choose **Add Remote Colima…** and enter a name, SSH alias, and remote profile. Use an SSH alias that already works over the LAN or a private network with `BatchMode=yes`. For a new host, verify and trust its SSH host key once. ColimaDock uses your existing SSH keys and polls independently of the active Docker context.
+Choose **Add Remote Colima…** and select **Sparky** to fill in `sparky-local` and `komodo-dev`. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local`, and the remote Colima profile. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
 
 Enter `29120:19120` in **Localhost forwards** to map this Mac's port 29120 to
 the remote Mac's port 19120. Add more pairs separated by commas. ColimaDock
