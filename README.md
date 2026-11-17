@@ -28,6 +28,7 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 - Shows remote Colima profiles and their containers in a separate menu for each connection
 - Checks remote inventories about every 20 seconds, backs off after connection failures, and samples remote container stats on request
 - Keeps optional localhost port forwards connected while ColimaDock is running
+- Can route Terminal Docker commands to a preferred remote and fall back to this Mac
 
 ## What it does not do
 
@@ -49,6 +50,18 @@ ports when it quits or you clear the field. Add ColimaDock to macOS Login Items
 if you want your forwards to come up when you sign in.
 
 The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover.
+
+### Prefer a remote Docker host
+
+Under **Docker Commands**, pick a saved remote and choose **Copy Docker Command Prefix**. In Terminal, paste the prefix and add a command such as `ps` or `compose up -d`. For an app in `/Applications`, the full command looks like this:
+
+```bash
+/Applications/ColimaDock.app/Contents/MacOS/ColimaDock docker -- ps
+```
+
+The launcher checks Docker on the preferred host first, then checks the Colima profile with the **same name** on this Mac. It prints its choice to stderr and runs the command once on that engine. Use `docker --target` to check which host the launcher would pick, or `docker --remote -- …` and `docker --local -- …` to require one host. These options follow the `ColimaDock` executable path.
+
+The launcher doesn't change Docker's current context or start either VM. Start the local profile yourself if you need it while the remote is away. To leave the MacBook's resources free in the office, keep the local copy of that workload stopped. Containers, named volumes, and published ports stay with their own engines; remote bind mounts use paths on the remote host. Use `--remote` or `--local` for a series of commands that must all use the same data. Separate builders selected explicitly with Buildx have their own targets.
 
 ## Requirements
 
