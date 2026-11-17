@@ -535,40 +535,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func editConnection(_ existing: RemoteColima?) {
+        let offersSparky = existing == nil && !remotes.contains {
+            $0.host.alias == RemoteConnectionForm.sparkyAlias && $0.host.profile == RemoteConnectionForm.sparkyProfile
+        }
         let alert = NSAlert()
         alert.messageText = existing == nil ? "Add Remote Colima" : "Edit Remote Colima"
-        alert.informativeText = "Use a trusted SSH alias. Optional localhost forwards use local:remote port pairs, separated by commas."
+        alert.informativeText = offersSparky
+            ? "Choose Sparky or enter a trusted SSH alias or hostname for another machine."
+            : "Use a trusted SSH alias or hostname. Separate multiple port forwards with commas."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
-        let name = NSTextField(string: existing?.host.name ?? "")
-        name.placeholderString = "Sparky"
-        let alias = NSTextField(string: existing?.host.alias ?? "")
-        alias.placeholderString = "sparky-local"
-        let profile = NSTextField(string: existing?.host.profile ?? "default")
-        let forwards = NSTextField(string: existing?.host.forwards?.map(\.label).joined(separator: ", ") ?? "")
-        forwards.placeholderString = "29120:19120"
-        let form = NSGridView(views: [[NSTextField(labelWithString: "Name"), name],
-                                      [NSTextField(labelWithString: "SSH alias"), alias],
-                                      [NSTextField(labelWithString: "Colima profile"), profile],
-                                      [NSTextField(labelWithString: "Localhost forwards"), forwards]])
-        for field in [name, alias, profile, forwards] { field.widthAnchor.constraint(equalToConstant: 210).isActive = true }
-        form.columnSpacing = 10
-        form.rowSpacing = 8
-        alert.accessoryView = form
-        alert.window.initialFirstResponder = name
+        let form = RemoteConnectionForm(existing: existing?.host, offersSparky: offersSparky)
+        alert.accessoryView = form.view
+        alert.window.initialFirstResponder = form.name
         NSApp.activate(ignoringOtherApps: true)
 
         while alert.runModal() == .alertFirstButtonReturn {
             let trim = CharacterSet.whitespacesAndNewlines
-            guard let mappings = LocalForward.parse(forwards.stringValue) else {
+            guard let mappings = LocalForward.parse(form.forwards.stringValue) else {
                 alert.informativeText = "Enter local:remote port pairs such as 29120:19120, using each local port once (1024–65535)."
                 continue
             }
-            guard let host = RemoteHost(name: name.stringValue.trimmingCharacters(in: trim),
-                                        alias: alias.stringValue.trimmingCharacters(in: trim),
-                                        profile: profile.stringValue.trimmingCharacters(in: trim), forwards: mappings) else {
-                alert.informativeText = "Enter a name, an SSH alias (such as sparky-local), and a Colima profile (such as default)."
+            guard let host = RemoteHost(name: form.name.stringValue.trimmingCharacters(in: trim),
+                                        alias: form.alias.stringValue.trimmingCharacters(in: trim),
+                                        profile: form.profile.stringValue.trimmingCharacters(in: trim), forwards: mappings) else {
+                alert.informativeText = "Enter a name, an SSH alias or hostname, and a Colima profile."
                 continue
             }
             guard !remotes.contains(where: { $0 !== existing && $0.host.alias == host.alias && $0.host.profile == host.profile }) else {
