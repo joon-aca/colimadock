@@ -225,6 +225,7 @@ final class RemoteColima: ObservableObject {
         vm = profile
         dockerSocket = socket
         containers = updated
+        tunnel.publish(Self.publishedPorts(updated))
         lastOnline = Date()
         error = nil
         state = .ready
@@ -237,11 +238,21 @@ final class RemoteColima: ObservableObject {
         state = unreachable ? .unreachable : failure
         self.vm = unreachable ? nil : vm
         containers = []
+        tunnel.publish([:])
         dockerSocket = nil
         statsAt = nil
         error = result.map(detail)
         failures = min(failures + 1, 3)
         nextRefresh = Date().addingTimeInterval(failure == .profileUnavailable ? 20 : [30, 60, 120][failures - 1])
+    }
+
+    /// Ports published by running containers, by port, with the container's name.
+    static func publishedPorts(_ containers: [Container]) -> [UInt16: String] {
+        var ports = [UInt16: String]()
+        for container in containers where container.state.isRunning {
+            for port in PublishedPorts.tcp(container.ports) where ports[port] == nil { ports[port] = container.name }
+        }
+        return ports
     }
 
     private func applyStats(_ stats: [String: ContainerStats], to containers: inout [Container]) {

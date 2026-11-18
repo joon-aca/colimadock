@@ -268,6 +268,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !container.ports.isEmpty {
             addDisabledItem("\(remote == nil ? "Ports" : "Ports on remote host"): \(container.ports)", to: submenu)
         }
+        if let remote, container.state.isRunning {
+            for port in PublishedPorts.tcp(container.ports) { addForwardItem(port, remote: remote, to: submenu) }
+        }
 
         if let stats = container.stats {
             submenu.addItem(NSMenuItem.separator())
@@ -357,16 +360,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for error in [remote.error, remote.operationError].compactMap({ $0 }) {
             addDisabledItem(shortError(error), to: submenu, detail: error)
         }
-        if let forwards = remote.host.forwards {
+        let wanted = remote.tunnel.wanted
+        if !wanted.isEmpty {
+            submenu.addItem(.separator())
             switch remote.tunnel.status {
             case .off, .connecting:
-                addDisabledItem("Connecting localhost forwards…", to: submenu)
+                addDisabledItem("Connecting ports to this Mac…", to: submenu)
             case .forwarding:
-                for forward in forwards {
-                    addDisabledItem("127.0.0.1:\(forward.localPort) → \(remote.host.name):\(forward.remotePort)", to: submenu)
-                }
+                addDisabledItem("On this Mac:", to: submenu)
+                for forward in wanted { addForwardItem(forward.localPort, remote: remote, to: submenu) }
             case .retrying(let error):
-                addDisabledItem("Localhost forwards offline • retrying", to: submenu)
+                addDisabledItem("Ports on this Mac offline • retrying", to: submenu)
                 addDisabledItem(shortError(error), to: submenu, detail: error)
             }
         }
@@ -428,6 +432,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: "VM Controls (default)", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
+    }
+
+    /// One forwarded port: `localhost:5432 → postgres`, or why it isn't listening on this Mac.
+    private func addForwardItem(_ port: UInt16, remote: RemoteColima, to menu: NSMenu) {
+        let tunnel = remote.tunnel
+        guard let forward = tunnel.wanted.first(where: { $0.localPort == port }) else { return }
+        let container = forward.localPort == forward.remotePort ? tunnel.published[port] : nil
+        let target = container ?? "\(remote.host.name):\(forward.remotePort)"
+        if let reason = tunnel.blocked[port] {
+            addDisabledItem("⚠︎ localhost:\(port) → \(target): \(shortError(reason))", to: menu, detail: reason)
+        } else if tunnel.active.contains(forward) {
+            addDisabledItem("localhost:\(port) → \(target)", to: menu)
+        } else {
+            addDisabledItem("localhost:\(port) → \(target) (connecting…)", to: menu)
+        }
     }
 
     /// The status dot for container and remote VM rows: filled when running, hollow when not.
@@ -548,7 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = existing == nil ? "Add Remote Colima" : "Edit Remote Colima"
         alert.informativeText = offersSparky
             ? "Choose Sparky or enter a trusted SSH alias or hostname for another machine, as user@host to log in as another account."
-            : "Use a trusted SSH alias or hostname, as user@host to log in as another account. Separate multiple port forwards with commas."
+            : "Use a trusted SSH alias or hostname, as user@host to log in as another account. Published container ports reach this Mac on the same localhost port automatically."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 

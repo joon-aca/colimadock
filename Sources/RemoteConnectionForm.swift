@@ -23,18 +23,18 @@ final class RemoteConnectionForm: NSObject {
             [NSTextField(labelWithString: "Name"), name],
             [NSTextField(labelWithString: "SSH host"), alias],
             [NSTextField(labelWithString: "Colima profile"), profile],
-            [NSTextField(labelWithString: "Localhost forwards"), forwards],
+            [NSTextField(labelWithString: "Extra forwards"), forwards],
         ]
         view = NSGridView(views: rows)
         super.init()
 
         name.placeholderString = "Office Mac"
         alias.placeholderString = "user@office-mac.local"
-        forwards.placeholderString = "Optional, e.g. 29120:19120"
+        forwards.placeholderString = "Optional local:remote, e.g. 29120:19120"
         name.setAccessibilityLabel("Name")
         alias.setAccessibilityLabel("SSH host")
         profile.setAccessibilityLabel("Colima profile")
-        forwards.setAccessibilityLabel("Localhost forwards")
+        forwards.setAccessibilityLabel("Extra forwards")
         for field in [name, alias, profile, forwards] {
             field.widthAnchor.constraint(equalToConstant: 230).isActive = true
         }
