@@ -11,6 +11,7 @@ let package = Package(
             name: "ColimaDock",
             path: "Sources",
             exclude: ["Info.plist"]
-        )
+        ),
+        .testTarget(name: "ColimaDockTests", dependencies: ["ColimaDock"], path: "Tests")
     ]
 )

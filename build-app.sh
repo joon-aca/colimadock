@@ -26,10 +26,12 @@ fi
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/Resources/DockerSSH"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 cp "Sources/Info.plist" "$APP_BUNDLE/Contents/"
 cp "$ICON_FILE" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+install -m 755 Scripts/docker-ssh "$APP_BUNDLE/Contents/Resources/DockerSSH/ssh"
 
 # The git tag is the version's source of truth; the build number is the commit count.
 if [ -n "${VERSION:-}" ]; then

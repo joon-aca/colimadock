@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-@main
 struct ColimaDockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -13,26 +12,78 @@ struct ColimaDockApp: App {
     }
 }
 
+@main
+enum ColimaDockMain {
+    @MainActor static func main() {
+        let arguments = CommandLine.arguments.dropFirst()
+        if arguments.first == "docker" {
+            let dockerArguments = Array(arguments.dropFirst())
+            Task.detached { await DockerCommand.run(dockerArguments) }
+            dispatchMain()
+        }
+        ColimaDockApp.main()
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private struct Target {
+        let remote: RemoteColima
+        let containerID: String
+    }
+    private struct LocalTarget {
+        let profile: String
+        let containerID: String
+    }
+
     private var statusItem: NSStatusItem!
     private var runtime: ColimaRuntime!
     private var cancellables = Set<AnyCancellable>()
+    private var localProfiles: [String: ColimaRuntime] = [:]
+    private var localObservers: [String: AnyCancellable] = [:]
+    private var remotes: [RemoteColima] = []
+    private var remoteObservers: [ObjectIdentifier: AnyCancellable] = [:]
+    private var dockerPreference: DockerPreference?
+    private var menuUpdateQueued = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runtime = ColimaRuntime()
+        dockerPreference = DockerPreference.load(from: .standard)
         setupStatusItem()
         setupMenu()
 
-        runtime.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.updateStatusIcon()
-                    self?.setupMenu()
+        if let data = UserDefaults.standard.data(forKey: RemoteHost.defaultsKey),
+           let hosts = try? JSONDecoder().decode([RemoteHost].self, from: data) {
+            for saved in hosts {
+                if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile, forwards: saved.forwards ?? []) {
+                    addRemote(host)
                 }
             }
+            requestMenuUpdate()
+        }
+
+        runtime.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.requestMenuUpdate() }
             .store(in: &cancellables)
+        runtime.$otherDockerProfiles
+            .sink { [weak self] in self?.syncLocalProfiles($0) }
+            .store(in: &cancellables)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        remotes.forEach { $0.tunnel.stop() }
+    }
+
+    private func requestMenuUpdate() {
+        guard !menuUpdateQueued else { return }
+        menuUpdateQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.menuUpdateQueued = false
+            self.updateStatusIcon()
+            self.setupMenu()
+        }
     }
 
     private func setupStatusItem() {
@@ -46,13 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbolName: String
         let accessibilityLabel: String
 
-        if runtime.isTransitioning {
+        if runtime.isTransitioning || localProfiles.values.contains(where: \.isTransitioning) || remotes.contains(where: \.isActing) {
             symbolName = "shippingbox.and.arrow.backward.fill"
             accessibilityLabel = "ColimaDock Transitioning"
-        } else if !runtime.vm.status.isRunning {
-            symbolName = "shippingbox"
-            accessibilityLabel = "Colima VM Stopped"
-        } else if runtime.hasRunningContainer {
+        } else if runtime.hasRunningContainer || localProfiles.values.contains(where: \.hasRunningContainer)
+                    || remotes.contains(where: { $0.containers.contains(where: { $0.state.isRunning }) }) {
             symbolName = "shippingbox.fill"
             accessibilityLabel = "Containers Running"
         } else {
@@ -70,27 +119,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        if runtime.isLoading {
-            addDisabledItem("Loading...", to: menu)
-        } else if !runtime.vm.status.isRunning {
-            addVMUnavailableItems(to: menu)
-        } else if runtime.containers.isEmpty {
-            addDisabledItem("No containers found", to: menu)
-        } else {
-            for container in runtime.containers {
-                menu.addItem(menuItem(for: container))
-            }
+        addSectionHeader("This Mac", to: menu)
+        addLocalProfile(runtime, to: menu)
+        menu.addItem(defaultVMMenuItem())
+        for profile in localProfiles.values.sorted(by: { $0.profile < $1.profile }) {
+            menu.addItem(.separator())
+            addLocalProfile(profile, to: menu)
         }
-
-        if let error = runtime.lastError {
-            menu.addItem(NSMenuItem.separator())
-            addDisabledItem("Error: \(shortError(error))", to: menu)
-        }
-
         addOrphanedProcessItems(to: menu)
 
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(vmMenuItem())
+        menu.addItem(.separator())
+        if !remotes.isEmpty { addSectionHeader("Remote Hosts", to: menu) }
+        for remote in remotes { menu.addItem(remoteMenuItem(remote)) }
+        addAction("Add Remote Colima…", #selector(addRemoteHost), to: menu)
+        if !remotes.isEmpty { menu.addItem(dockerCommandsMenuItem()) }
 
         menu.addItem(NSMenuItem.separator())
         let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshStatus), keyEquivalent: "r")
@@ -105,19 +147,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func addVMUnavailableItems(to menu: NSMenu) {
-        addDisabledItem("Colima VM default: \(runtime.vm.status.displayName)", to: menu)
-
-        if runtime.vm.status.isTransitioning {
-            addDisabledItem(runtime.vm.status.displayName, to: menu)
-            return
+    private func dockerCommandsMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Docker Commands", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let preferred = remotes.first { DockerPreference($0.host) == dockerPreference }
+        if let preferred {
+            addDisabledItem("Prefer \(preferred.host.name); fall back to this Mac’s \(preferred.host.profile) VM", to: submenu)
+        } else {
+            addDisabledItem("Choose a preferred host", to: submenu)
         }
-
-        for lock in runtime.staleDiskLocks {
-            addDisabledItem("⚠︎ Leftover lock on disk \(lock.disk) will block starting", to: menu)
+        for remote in remotes {
+            addAction("\(remote.host.name) (\(remote.host.profile))", #selector(preferDockerHost(_:)),
+                      to: submenu, representedBy: remote)
+            submenu.items.last?.state = remote === preferred ? .on : .off
         }
+        submenu.addItem(.separator())
+        addAction("Copy Docker Command Prefix", #selector(copyDockerCommand), to: submenu, enabled: preferred != nil)
+        item.submenu = submenu
+        return item
+    }
 
-        addStartVMItems(to: menu)
+    @objc private func preferDockerHost(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima,
+              remotes.contains(where: { $0 === remote }) else { return }
+        setDockerPreference(DockerPreference(remote.host))
+    }
+
+    private func setDockerPreference(_ preference: DockerPreference?) {
+        dockerPreference = preference
+        if let preference {
+            preference.save(to: .standard)
+        } else {
+            UserDefaults.standard.removeObject(forKey: DockerPreference.defaultsKey)
+        }
+        requestMenuUpdate()
+    }
+
+    @objc private func copyDockerCommand() {
+        guard let executable = Bundle.main.executablePath else { return }
+        let path = "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let clipboard = NSPasteboard.general
+        clipboard.clearContents()
+        clipboard.setString("\(path) docker -- ", forType: .string)
     }
 
     /// Start always clears stale locks first (see ColimaRuntime.startVM); the label just says so.
@@ -126,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let lockNoun = runtime.staleDiskLocks.count > 1 ? "Locks" : "Lock"
 
         let startItem = NSMenuItem(
-            title: hasStaleLocks ? "Clear \(lockNoun) & Start Colima" : "Start Colima",
+            title: hasStaleLocks ? "Clear \(lockNoun) & Start default VM" : "Start default VM",
             action: #selector(startVM),
             keyEquivalent: ""
         )
@@ -181,7 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func menuItem(for container: Container) -> NSMenuItem {
+    private func menuItem(for container: Container, remote: RemoteColima? = nil, localProfile: String? = nil) -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
 
@@ -194,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !container.ports.isEmpty {
-            addDisabledItem("Ports: \(container.ports)", to: submenu)
+            addDisabledItem("\(remote == nil ? "Ports" : "Ports on remote host"): \(container.ports)", to: submenu)
         }
 
         if let stats = container.stats {
@@ -207,18 +279,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         submenu.addItem(NSMenuItem.separator())
-        if container.isTransitioning {
+        if container.isTransitioning || remote?.isActing == true {
             addDisabledItem("Working...", to: submenu)
         } else if container.state.canStop {
-            let stopItem = NSMenuItem(title: "Stop", action: #selector(stopContainer(_:)), keyEquivalent: "")
-            stopItem.target = self
-            stopItem.representedObject = container.id
-            submenu.addItem(stopItem)
+            if let remote {
+                addAction("Stop on \(remote.host.name)", #selector(stopContainer(_:)), to: submenu,
+                          representedBy: Target(remote: remote, containerID: container.id))
+            } else if let localProfile {
+                addAction("Stop", #selector(stopContainer(_:)), to: submenu,
+                          representedBy: LocalTarget(profile: localProfile, containerID: container.id))
+            } else {
+                addAction("Stop", #selector(stopContainer(_:)), to: submenu, representedBy: container.id)
+            }
         } else if container.state.canStart {
-            let startItem = NSMenuItem(title: "Start", action: #selector(startContainer(_:)), keyEquivalent: "")
-            startItem.target = self
-            startItem.representedObject = container.id
-            submenu.addItem(startItem)
+            if let remote {
+                addAction("Start on \(remote.host.name)", #selector(startContainer(_:)), to: submenu,
+                          representedBy: Target(remote: remote, containerID: container.id))
+            } else if let localProfile {
+                addAction("Start", #selector(startContainer(_:)), to: submenu,
+                          representedBy: LocalTarget(profile: localProfile, containerID: container.id))
+            } else {
+                addAction("Start", #selector(startContainer(_:)), to: submenu, representedBy: container.id)
+            }
         } else {
             addDisabledItem("No action available", to: submenu)
         }
@@ -229,7 +311,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func vmMenuItem() -> NSMenuItem {
+    private func syncLocalProfiles(_ names: [String]) {
+        let discovered = Set(names)
+        for name in Set(localProfiles.keys).subtracting(discovered) {
+            localProfiles.removeValue(forKey: name)?.stopRefreshing()
+            localObservers.removeValue(forKey: name)
+        }
+        for name in names where localProfiles[name] == nil {
+            let profile = ColimaRuntime(profile: name)
+            localProfiles[name] = profile
+            localObservers[name] = profile.objectWillChange
+                .sink { [weak self] _ in self?.requestMenuUpdate() }
+        }
+        requestMenuUpdate()
+    }
+
+    private func addLocalProfile(_ profile: ColimaRuntime, to menu: NSMenu) {
+        addDisabledItem("\(profile.profile) VM", to: menu)
+        if profile.isLoading {
+            addDisabledItem("Loading…", to: menu)
+        } else if let error = profile.lastError {
+            addDisabledItem(shortError(error), to: menu, detail: error)
+        } else if !profile.vm.status.isRunning {
+            addDisabledItem(profile.vm.status.displayName, to: menu)
+        } else if profile.containers.isEmpty {
+            addDisabledItem("No containers found", to: menu)
+        } else {
+            let localProfile = profile === runtime ? nil : profile.profile
+            for container in profile.containers {
+                menu.addItem(menuItem(for: container, localProfile: localProfile))
+            }
+        }
+    }
+
+    private func remoteMenuItem(_ remote: RemoteColima) -> NSMenuItem {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        addDisabledItem("SSH: \(remote.host.alias) • Profile: \(remote.host.profile)", to: submenu)
+        if let vm = remote.vm {
+            addDisabledItem("VM: \(vm.status.displayName) • \(vm.cpus) CPUs • \(vm.memoryFormatted) RAM", to: submenu)
+        }
+        if let last = remote.lastOnline, remote.state != .ready {
+            addDisabledItem("Last online: \(last.formatted(date: .abbreviated, time: .shortened))", to: submenu)
+        }
+        for error in [remote.error, remote.operationError].compactMap({ $0 }) {
+            addDisabledItem(shortError(error), to: submenu, detail: error)
+        }
+        if let forwards = remote.host.forwards {
+            switch remote.tunnel.status {
+            case .off, .connecting:
+                addDisabledItem("Connecting localhost forwards…", to: submenu)
+            case .forwarding:
+                for forward in forwards {
+                    addDisabledItem("127.0.0.1:\(forward.localPort) → \(remote.host.name):\(forward.remotePort)", to: submenu)
+                }
+            case .retrying(let error):
+                addDisabledItem("Localhost forwards offline • retrying", to: submenu)
+                addDisabledItem(shortError(error), to: submenu, detail: error)
+            }
+        }
+        if remote.state == .ready {
+            submenu.addItem(.separator())
+            if remote.containers.isEmpty {
+                addDisabledItem("No containers found", to: submenu)
+            } else {
+                for container in remote.containers { submenu.addItem(menuItem(for: container, remote: remote)) }
+            }
+        }
+        submenu.addItem(.separator())
+        if let last = remote.statsAt {
+            addDisabledItem("Stats sampled at \(last.formatted(date: .omitted, time: .standard))", to: submenu)
+        }
+        addAction("Check Now", #selector(refreshRemote(_:)), to: submenu, representedBy: remote)
+        if remote.state == .ready, remote.containers.contains(where: { $0.state.isRunning }) {
+            addAction("Sample CPU & Memory", #selector(sampleRemoteStats(_:)), to: submenu,
+                      representedBy: remote, enabled: !remote.isActing)
+        }
+        addAction("Edit Connection…", #selector(editRemoteHost(_:)), to: submenu,
+                  representedBy: remote, enabled: !remote.isActing)
+        addAction("Forget Connection", #selector(forgetRemoteHost(_:)), to: submenu,
+                  representedBy: remote, enabled: !remote.isActing)
+
+        let item = NSMenuItem(title: "\(remote.host.name) • \(remote.titleStatus)", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    private func defaultVMMenuItem() -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
 
@@ -241,24 +409,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addDisabledItem("Disk: \(runtime.vm.diskFormatted)", to: submenu)
 
         submenu.addItem(NSMenuItem.separator())
-        if runtime.vm.status.isTransitioning {
+        if runtime.isLoading || runtime.vm.status.isTransitioning {
             addDisabledItem(runtime.vm.status.displayName, to: submenu)
         } else if runtime.vm.status.isRunning {
-            let stopItem = NSMenuItem(title: "Stop Colima", action: #selector(stopVM), keyEquivalent: "")
+            let stopItem = NSMenuItem(title: "Stop default VM", action: #selector(stopVM), keyEquivalent: "")
             stopItem.target = self
             submenu.addItem(stopItem)
         } else {
+            for lock in runtime.staleDiskLocks {
+                addDisabledItem("⚠︎ Leftover lock on disk \(lock.disk) will block starting", to: submenu)
+            }
             addStartVMItems(to: submenu)
         }
 
-        let item = NSMenuItem(title: "Colima VM", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "VM Controls (default)", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
     }
 
-    private func addDisabledItem(_ title: String, to menu: NSMenu) {
+    private func addDisabledItem(_ title: String, to menu: NSMenu, detail: String? = nil) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        item.toolTip = detail
+        menu.addItem(item)
+    }
+
+    private func addSectionHeader(_ title: String, to menu: NSMenu) {
+        if #available(macOS 14.0, *) {
+            menu.addItem(.sectionHeader(title: title))
+        } else {
+            addDisabledItem(title, to: menu)
+        }
+    }
+
+    private func addAction(_ title: String, _ action: Selector, to menu: NSMenu,
+                           representedBy object: Any? = nil, enabled: Bool = true) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = object
+        item.isEnabled = enabled
         menu.addItem(item)
     }
 
@@ -292,17 +481,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startContainer(_ sender: NSMenuItem) {
+        if let target = sender.representedObject as? Target, remotes.contains(where: { $0 === target.remote }) {
+            target.remote.changeContainer(id: target.containerID, start: true)
+            return
+        }
+        if let target = sender.representedObject as? LocalTarget {
+            localProfiles[target.profile]?.startContainer(id: target.containerID)
+            return
+        }
         guard let id = sender.representedObject as? String else { return }
         runtime.startContainer(id: id)
     }
 
     @objc private func stopContainer(_ sender: NSMenuItem) {
+        if let target = sender.representedObject as? Target, remotes.contains(where: { $0 === target.remote }) {
+            target.remote.changeContainer(id: target.containerID, start: false)
+            return
+        }
+        if let target = sender.representedObject as? LocalTarget {
+            localProfiles[target.profile]?.stopContainer(id: target.containerID)
+            return
+        }
         guard let id = sender.representedObject as? String else { return }
         runtime.stopContainer(id: id)
     }
 
     @objc private func refreshStatus() {
         runtime.refresh()
+        localProfiles.values.forEach { $0.refresh() }
+        remotes.forEach { $0.refresh() }
+    }
+
+    @objc private func refreshRemote(_ sender: NSMenuItem) {
+        (sender.representedObject as? RemoteColima)?.refresh()
+    }
+
+    @objc private func sampleRemoteStats(_ sender: NSMenuItem) {
+        (sender.representedObject as? RemoteColima)?.sampleStats()
+    }
+
+    @objc private func addRemoteHost() { editConnection(nil) }
+
+    @objc private func editRemoteHost(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima, !remote.isActing else { return }
+        editConnection(remote)
+    }
+
+    @objc private func forgetRemoteHost(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima, !remote.isActing else { return }
+        removeRemote(remote)
+        if DockerPreference(remote.host) == dockerPreference { setDockerPreference(nil) }
+        saveRemotes()
+    }
+
+    private func editConnection(_ existing: RemoteColima?) {
+        let offersSparky = existing == nil && !remotes.contains {
+            $0.host.alias == RemoteConnectionForm.sparkyAlias && $0.host.profile == RemoteConnectionForm.sparkyProfile
+        }
+        let alert = NSAlert()
+        alert.messageText = existing == nil ? "Add Remote Colima" : "Edit Remote Colima"
+        alert.informativeText = offersSparky
+            ? "Choose Sparky or enter a trusted SSH alias or hostname for another machine, as user@host to log in as another account."
+            : "Use a trusted SSH alias or hostname, as user@host to log in as another account. Separate multiple port forwards with commas."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let form = RemoteConnectionForm(existing: existing?.host, offersSparky: offersSparky)
+        alert.accessoryView = form.view
+        alert.window.initialFirstResponder = form.name
+        NSApp.activate(ignoringOtherApps: true)
+
+        while alert.runModal() == .alertFirstButtonReturn {
+            let trim = CharacterSet.whitespacesAndNewlines
+            guard let mappings = LocalForward.parse(form.forwards.stringValue) else {
+                alert.informativeText = "Enter local:remote port pairs such as 29120:19120, using each local port once (1024–65535)."
+                continue
+            }
+            guard let host = RemoteHost(name: form.name.stringValue.trimmingCharacters(in: trim),
+                                        alias: form.alias.stringValue.trimmingCharacters(in: trim),
+                                        profile: form.profile.stringValue.trimmingCharacters(in: trim), forwards: mappings) else {
+                alert.informativeText = "Enter a name, an SSH alias or hostname (optionally user@host), and a Colima profile."
+                continue
+            }
+            guard !remotes.contains(where: { $0 !== existing && $0.host.alias == host.alias && $0.host.profile == host.profile }) else {
+                alert.informativeText = "This SSH alias and profile are already in the menu."
+                continue
+            }
+            let otherPorts = Set(remotes.filter { $0 !== existing }.flatMap { $0.host.forwards ?? [] }.map(\.localPort))
+            guard otherPorts.isDisjoint(with: mappings.map(\.localPort)) else {
+                alert.informativeText = "Choose a local port that isn’t already assigned to another connection in ColimaDock."
+                continue
+            }
+            if existing?.host == host { break }
+            if let existing {
+                if DockerPreference(existing.host) == dockerPreference { setDockerPreference(DockerPreference(host)) }
+                removeRemote(existing)
+            }
+            addRemote(host)
+            saveRemotes()
+            break
+        }
+    }
+
+    private func addRemote(_ host: RemoteHost) {
+        let remote = RemoteColima(host: host)
+        remotes.append(remote)
+        remoteObservers[ObjectIdentifier(remote)] = remote.objectWillChange
+            .merge(with: remote.tunnel.objectWillChange)
+            .sink { [weak self] _ in self?.requestMenuUpdate() }
+        remote.startRefreshing()
+        remote.tunnel.start()
+    }
+
+    private func removeRemote(_ remote: RemoteColima) {
+        remote.stopRefreshing()
+        remote.tunnel.stop()
+        remoteObservers.removeValue(forKey: ObjectIdentifier(remote))
+        remotes.removeAll { $0 === remote }
+    }
+
+    private func saveRemotes() {
+        if let data = try? JSONEncoder().encode(remotes.map(\.host)) {
+            UserDefaults.standard.set(data, forKey: RemoteHost.defaultsKey)
+        }
+        requestMenuUpdate()
     }
 
     @objc private func quitApp() {
