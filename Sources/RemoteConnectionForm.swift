@@ -2,8 +2,9 @@ import AppKit
 
 @MainActor
 final class RemoteConnectionForm: NSObject {
-    static let sparkyAlias = "sparky-local"
-    static let sparkyProfile = "komodo-dev"
+    // Sparky's VMs belong to its worker account (see sparky-vm); `offload` is the everyday one.
+    static let sparkyAlias = "worker@sparky-local"
+    static let sparkyProfile = "offload"
 
     let name = NSTextField(string: "")
     let alias = NSTextField(string: "")
