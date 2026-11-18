@@ -305,8 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             addDisabledItem("No action available", to: submenu)
         }
 
-        let statusIcon = container.state.isRunning ? "●" : "○"
-        let item = NSMenuItem(title: "\(statusIcon) \(container.name)", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "\(statusDot(container.state.isRunning)) \(container.name)", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
     }
@@ -347,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func remoteMenuItem(_ remote: RemoteColima) -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
+        addDisabledItem("Status: \(remote.titleStatus)", to: submenu)
         addDisabledItem("SSH: \(remote.host.alias) • Profile: \(remote.host.profile)", to: submenu)
         if let vm = remote.vm {
             addDisabledItem("VM: \(vm.status.displayName) • \(vm.cpus) CPUs • \(vm.memoryFormatted) RAM", to: submenu)
@@ -392,7 +392,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addAction("Forget Connection", #selector(forgetRemoteHost(_:)), to: submenu,
                   representedBy: remote, enabled: !remote.isActing)
 
-        let item = NSMenuItem(title: "\(remote.host.name) • \(remote.titleStatus)", action: nil, keyEquivalent: "")
+        // Same dots as containers; a failure gets the warning mark so it doesn't read as merely stopped.
+        let icon = remote.state.isFailure ? "⚠︎" : statusDot(remote.state == .ready)
+        let item = NSMenuItem(title: "\(icon) \(remote.host.name)", action: nil, keyEquivalent: "")
+        item.toolTip = remote.titleStatus
         item.submenu = submenu
         return item
     }
@@ -426,6 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.submenu = submenu
         return item
     }
+
+    /// The status dot for container and remote VM rows: filled when running, hollow when not.
+    private func statusDot(_ running: Bool) -> String { running ? "●" : "○" }
 
     private func addDisabledItem(_ title: String, to menu: NSMenu, detail: String? = nil) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")

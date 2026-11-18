@@ -83,6 +83,9 @@ final class RemoteColima: ObservableObject {
             case .ready: return "Online"
             }
         }
+
+        /// SSH, Colima or Docker did not answer, as opposed to a VM that is simply stopped.
+        var isFailure: Bool { [.unreachable, .colimaUnavailable, .dockerUnavailable].contains(self) }
     }
 
     typealias Runner = @Sendable ([String], TimeInterval) async -> CommandResult
