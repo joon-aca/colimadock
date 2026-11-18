@@ -11,12 +11,21 @@ ICON_SCRIPT="Scripts/make-icon.swift"
 ICON_FILE=".build/AppIcon.icns"
 
 if [ "${UNIVERSAL:-0}" = "1" ]; then
-    swift build -c release --arch arm64 --arch x86_64
-    BUILD_DIR=".build/apple/Products/Release"
+    BUILD_ARGS=(-c release --arch arm64 --arch x86_64)
+    WANT_ARCHS="x86_64 arm64"
 else
-    swift build -c release
-    BUILD_DIR=".build/release"
+    BUILD_ARGS=(-c release)
+    WANT_ARCHS="$(uname -m)"
 fi
+swift build "${BUILD_ARGS[@]}"
+# Ask SwiftPM where it put the binary. The multi-arch output directory moved
+# (.build/apple/... to .build/out/... in Swift 6.4), and a hard-coded path
+# silently packaged a stale 0.1.0 binary into the 0.2.0 release.
+BUILD_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
+for arch in $WANT_ARCHS; do
+    lipo "$BUILD_DIR/$APP_NAME" -verify_arch "$arch" \
+        || { echo "error: $BUILD_DIR/$APP_NAME has no $arch slice ($(lipo -archs "$BUILD_DIR/$APP_NAME"))" >&2; exit 1; }
+done
 
 # The icon is drawn by code; regenerate only when the drawing changes.
 if [ ! -f "$ICON_FILE" ] || [ "$ICON_SCRIPT" -nt "$ICON_FILE" ]; then
