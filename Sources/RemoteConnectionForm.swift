@@ -2,9 +2,9 @@ import AppKit
 
 @MainActor
 final class RemoteConnectionForm: NSObject {
-    // Sparky's VMs belong to its worker account (see sparky-vm); `offload` is the everyday one.
+    // Sparky runs one VM, Colima's default profile, under its worker account (see sparky-vm).
     static let sparkyAlias = "worker@sparky-local"
-    static let sparkyProfile = "offload"
+    static let sparkyProfile = "default"
 
     let name = NSTextField(string: "")
     let alias = NSTextField(string: "")

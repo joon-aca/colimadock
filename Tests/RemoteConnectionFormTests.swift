@@ -22,6 +22,6 @@ final class RemoteConnectionFormTests: XCTestCase {
         }
         XCTAssertEqual(form.name.stringValue, "Sparky")
         XCTAssertEqual(form.alias.stringValue, "worker@sparky-local")
-        XCTAssertEqual(form.profile.stringValue, "offload")
+        XCTAssertEqual(form.profile.stringValue, "default")
     }
 }
