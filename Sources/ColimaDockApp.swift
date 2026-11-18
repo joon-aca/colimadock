@@ -541,8 +541,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = existing == nil ? "Add Remote Colima" : "Edit Remote Colima"
         alert.informativeText = offersSparky
-            ? "Choose Sparky or enter a trusted SSH alias or hostname for another machine."
-            : "Use a trusted SSH alias or hostname. Separate multiple port forwards with commas."
+            ? "Choose Sparky or enter a trusted SSH alias or hostname for another machine, as user@host to log in as another account."
+            : "Use a trusted SSH alias or hostname, as user@host to log in as another account. Separate multiple port forwards with commas."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
@@ -560,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let host = RemoteHost(name: form.name.stringValue.trimmingCharacters(in: trim),
                                         alias: form.alias.stringValue.trimmingCharacters(in: trim),
                                         profile: form.profile.stringValue.trimmingCharacters(in: trim), forwards: mappings) else {
-                alert.informativeText = "Enter a name, an SSH alias or hostname, and a Colima profile."
+                alert.informativeText = "Enter a name, an SSH alias or hostname (optionally user@host), and a Colima profile."
                 continue
             }
             guard !remotes.contains(where: { $0 !== existing && $0.host.alias == host.alias && $0.host.profile == host.profile }) else {

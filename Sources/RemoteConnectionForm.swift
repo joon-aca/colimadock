@@ -20,7 +20,7 @@ final class RemoteConnectionForm: NSObject {
         }
         rows += [
             [NSTextField(labelWithString: "Name"), name],
-            [NSTextField(labelWithString: "SSH alias or hostname"), alias],
+            [NSTextField(labelWithString: "SSH host"), alias],
             [NSTextField(labelWithString: "Colima profile"), profile],
             [NSTextField(labelWithString: "Localhost forwards"), forwards],
         ]
@@ -28,10 +28,10 @@ final class RemoteConnectionForm: NSObject {
         super.init()
 
         name.placeholderString = "Office Mac"
-        alias.placeholderString = "office-mac.local"
+        alias.placeholderString = "user@office-mac.local"
         forwards.placeholderString = "Optional, e.g. 29120:19120"
         name.setAccessibilityLabel("Name")
-        alias.setAccessibilityLabel("SSH alias or hostname")
+        alias.setAccessibilityLabel("SSH host")
         profile.setAccessibilityLabel("Colima profile")
         forwards.setAccessibilityLabel("Localhost forwards")
         for field in [name, alias, profile, forwards] {

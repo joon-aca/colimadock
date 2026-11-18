@@ -16,8 +16,12 @@ struct RemoteHost: Codable, Equatable {
                 && token.unicodeScalars.first.map(letters.contains) == true
                 && token.unicodeScalars.allSatisfy(letters.union(CharacterSet(charactersIn: allowed)).contains)
         }
+        // An SSH alias or hostname, optionally with the account to log in as: `worker@sparky-local`.
+        let target = alias.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let user = target.count == 2 ? target[0] : nil
         guard !name.isEmpty, name.count <= 48, !name.containsControlCharacters,
-              valid(alias, allowed: ".-_", limit: 253), valid(profile, allowed: "-_", limit: 64),
+              valid(target[target.count - 1], allowed: ".-_", limit: 253), user.map({ valid($0, allowed: ".-_", limit: 32) }) ?? true,
+              valid(profile, allowed: "-_", limit: 64),
               forwards.allSatisfy({ $0.localPort >= 1024 && $0.remotePort > 0 }),
               Set(forwards.map(\.localPort)).count == forwards.count else { return nil }
         self.name = name
