@@ -98,6 +98,11 @@ final class RemoteColimaTests: XCTestCase {
         XCTAssertNil(RemoteHost.dockerSocket(from: #"{"docker_socket":"unix:///tmp/a\u0007/docker.sock"}"#))
     }
 
+    func testOnlyConnectionProblemsCountAsFailures() {
+        XCTAssertEqual([RemoteColima.State.checking, .unreachable, .colimaUnavailable, .profileUnavailable, .dockerUnavailable, .ready]
+            .map(\.isFailure), [false, true, true, false, true, false])
+    }
+
     func testHostMayNameTheAccountToLogInAs() throws {
         let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "worker@sparky-local", profile: "offload"))
         XCTAssertEqual(host.ssh(["true"]).dropLast().last, "worker@sparky-local")
