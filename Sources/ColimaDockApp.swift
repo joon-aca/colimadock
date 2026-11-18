@@ -1,17 +1,8 @@
 import AppKit
 import Combine
-import SwiftUI
 
-struct ColimaDockApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
-        }
-    }
-}
-
+// Plain AppKit, no SwiftUI `App`: a SwiftUI app whose only scene is `Settings`
+// opens an empty Settings window at every launch.
 @main
 enum ColimaDockMain {
     @MainActor static func main() {
@@ -21,7 +12,10 @@ enum ColimaDockMain {
             Task.detached { await DockerCommand.run(dockerArguments) }
             dispatchMain()
         }
-        ColimaDockApp.main()
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) { app.run() }
     }
 }
 
