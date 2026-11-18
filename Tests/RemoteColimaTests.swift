@@ -89,6 +89,25 @@ final class RemoteColimaTests: XCTestCase {
         XCTAssertTrue(command.last?.contains("'unix:///Users/it'\\''s me/docker.sock'") == true)
     }
 
+    func testPlainNamesAndSocketsPassAndControlCharactersDoNot() throws {
+        XCTAssertNotNil(RemoteHost(name: "Sparky", alias: "sparky-local", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Spar\u{7}ky", alias: "sparky-local", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Spar\u{200B}ky", alias: "sparky-local", profile: "offload"))
+        XCTAssertEqual(RemoteHost.dockerSocket(from: #"{"docker_socket":"unix:///Users/worker/.colima/big/docker.sock"}"#),
+                       "unix:///Users/worker/.colima/big/docker.sock")
+        XCTAssertNil(RemoteHost.dockerSocket(from: #"{"docker_socket":"unix:///tmp/a\u0007/docker.sock"}"#))
+    }
+
+    func testHostMayNameTheAccountToLogInAs() throws {
+        let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "worker@sparky-local", profile: "offload"))
+        XCTAssertEqual(host.ssh(["true"]).dropLast().last, "worker@sparky-local")
+        XCTAssertNil(RemoteHost(name: "Sparky", alias: "-oProxyCommand=x@sparky-local", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Sparky", alias: "worker@-F", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Sparky", alias: "@sparky-local", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Sparky", alias: "worker@", profile: "offload"))
+        XCTAssertNil(RemoteHost(name: "Sparky", alias: "a@b@sparky-local", profile: "offload"))
+    }
+
     func testExistingConnectionsLoadWithNoForwardAndPortPairsStayOnLoopback() throws {
         let data = Data(#"{"name":"Sparky","alias":"sparky-local","profile":"komodo-dev"}"#.utf8)
         let existing = try JSONDecoder().decode(RemoteHost.self, from: data)

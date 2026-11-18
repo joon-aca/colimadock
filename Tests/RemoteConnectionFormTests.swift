@@ -21,7 +21,7 @@ final class RemoteConnectionFormTests: XCTestCase {
             XCTAssertTrue(form.view.bounds.contains(field.convert(field.bounds, to: form.view)))
         }
         XCTAssertEqual(form.name.stringValue, "Sparky")
-        XCTAssertEqual(form.alias.stringValue, "sparky-local")
-        XCTAssertEqual(form.profile.stringValue, "komodo-dev")
+        XCTAssertEqual(form.alias.stringValue, "worker@sparky-local")
+        XCTAssertEqual(form.profile.stringValue, "offload")
     }
 }
