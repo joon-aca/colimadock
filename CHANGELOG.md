@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+Remote hosts as easy to manage as this Mac.
+
+- **Remote connections get their own section**, like **This Mac**: containers sit at the top level of the menu instead of one submenu deeper, with the status line (and any **⚠︎** problem) right under the connection's name. Status details, **Edit Connection…** and **Forget Connection** move to **Connection Controls**.
+- **Opening the menu catches remotes up**: a remote not checked in the last 10 seconds is re-checked right away, failure backoff or not, and its running containers' CPU and memory are sampled in the same pass. **Refresh** (⌘R) does the same for all of them. This replaces **Check Now** and **Sample CPU & Memory**, which closed the menu with no visible result. The menu can't change while it's open, so new results show on the next open. Remote stats are labelled **Stats from 14:52:07** so an old sample can't pass as live.
+- Fixed: SSH tunnels outlived ColimaDock when it was killed (`pkill`, `make run`) or crashed, and kept holding their ports here, so the next launch marked them **⚠︎ in use on this Mac**. ColimaDock now quits normally on SIGTERM, SIGINT and SIGHUP, and at launch it stops tunnels an earlier instance left behind and removes their folders in `/tmp`.
+- Fixed: an empty **ColimaDock Settings** window opened at every launch.
+
 ## 0.3.0
 
 Remote containers' ports on this Mac, like a local VM.
