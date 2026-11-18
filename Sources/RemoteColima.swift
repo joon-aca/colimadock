@@ -16,7 +16,7 @@ struct RemoteHost: Codable, Equatable {
                 && token.unicodeScalars.first.map(letters.contains) == true
                 && token.unicodeScalars.allSatisfy(letters.union(CharacterSet(charactersIn: allowed)).contains)
         }
-        guard !name.isEmpty, name.count <= 48, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+        guard !name.isEmpty, name.count <= 48, !name.containsControlCharacters,
               valid(alias, allowed: ".-_", limit: 253), valid(profile, allowed: "-_", limit: 64),
               forwards.allSatisfy({ $0.localPort >= 1024 && $0.remotePort > 0 }),
               Set(forwards.map(\.localPort)).count == forwards.count else { return nil }
@@ -47,10 +47,20 @@ struct RemoteHost: Codable, Equatable {
                   let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let socket = status["docker_socket"] as? String,
                   socket.hasPrefix("unix:///"), socket.hasSuffix("/docker.sock"),
-                  !socket.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { continue }
+                  !socket.containsControlCharacters else { continue }
             return socket
         }
         return nil
+    }
+}
+
+extension String {
+    /// Whether any scalar is a control or format character (Unicode Cc/Cf, the
+    /// set `CharacterSet.controlCharacters` describes). Checked by category:
+    /// `contains(where: CharacterSet.controlCharacters.contains)` returned true
+    /// for plain ASCII in this module's release build, rejecting every host.
+    var containsControlCharacters: Bool {
+        unicodeScalars.contains { [.control, .format].contains($0.properties.generalCategory) }
     }
 }
 
