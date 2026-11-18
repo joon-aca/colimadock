@@ -84,9 +84,9 @@ Runs the tests in debug and release, builds `ColimaDock.app` for this Mac, and l
 ## Release
 
 ```bash
-make release VERSION=0.2.0
+make release VERSION=0.2.1
 ```
 
-Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.2.0`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.2.0` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
+Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.2.1`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.2.1` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
 
 One-time setup: notarization credentials live in your keychain, never in the repo. `make release` prints the exact `xcrun notarytool store-credentials` command if they are missing.

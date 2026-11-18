@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Fixed: the 0.2.0 download contained the 0.1.0 app, so it had no remote hosts. Swift 6.4 moved where universal builds are written, and the build script copied a stale binary from the old location. It now asks SwiftPM for the path and refuses a binary missing either architecture.
+
 ## 0.2.0
 
 Remote hosts: watch Colima on another Mac over SSH.
