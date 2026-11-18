@@ -16,7 +16,9 @@ app: test
 	./build-app.sh
 
 run: app
+	# SIGTERM quits normally, stopping its SSH tunnels; wait so `open` starts the new build.
 	-pkill -x ColimaDock
+	@while pgrep -x ColimaDock >/dev/null; do sleep 0.2; done
 	open ColimaDock.app
 
 release: test

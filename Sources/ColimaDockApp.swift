@@ -39,21 +39,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var remoteObservers: [ObjectIdentifier: AnyCancellable] = [:]
     private var dockerPreference: DockerPreference?
     private var menuUpdateQueued = false
+    private var signalSources: [DispatchSourceSignal] = []
+    private var leftoverTunnelsStopped = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runtime = ColimaRuntime()
         dockerPreference = DockerPreference.load(from: .standard)
+        quitOnTerminationSignals()
         setupStatusItem()
         setupMenu()
 
-        if let data = UserDefaults.standard.data(forKey: RemoteHost.defaultsKey),
-           let hosts = try? JSONDecoder().decode([RemoteHost].self, from: data) {
-            for saved in hosts {
-                if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile, forwards: saved.forwards ?? []) {
-                    addRemote(host)
-                }
-            }
-            requestMenuUpdate()
+        loadSavedRemotes()
+        // Free the ports a killed or crashed instance's tunnels still hold before ours open.
+        Task {
+            await RemoteTunnel.stopLeftovers()
+            leftoverTunnelsStopped = true
+            remotes.forEach { $0.tunnel.start() }
         }
 
         runtime.objectWillChange
@@ -67,6 +68,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         remotes.forEach { $0.tunnel.stop() }
+    }
+
+    /// `kill`, `pkill` (as `make run` uses), logout and Ctrl-C quit normally instead of exiting
+    /// on the spot, so `applicationWillTerminate` stops the SSH tunnels. Otherwise they outlive
+    /// the app and keep its ports on this Mac.
+    private func quitOnTerminationSignals() {
+        for number in [SIGTERM, SIGINT, SIGHUP] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler { Task { @MainActor in NSApp.terminate(nil) } }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    private func loadSavedRemotes() {
+        guard let data = UserDefaults.standard.data(forKey: RemoteHost.defaultsKey),
+              let hosts = try? JSONDecoder().decode([RemoteHost].self, from: data) else { return }
+        for saved in hosts {
+            if let host = RemoteHost(name: saved.name, alias: saved.alias, profile: saved.profile, forwards: saved.forwards ?? []) {
+                addRemote(host)
+            }
+        }
+        requestMenuUpdate()
     }
 
     private func requestMenuUpdate() {
@@ -609,7 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .merge(with: remote.tunnel.objectWillChange)
             .sink { [weak self] _ in self?.requestMenuUpdate() }
         remote.startRefreshing()
-        remote.tunnel.start()
+        if leftoverTunnelsStopped { remote.tunnel.start() }
     }
 
     private func removeRemote(_ remote: RemoteColima) {

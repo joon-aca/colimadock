@@ -1,6 +1,7 @@
 import Combine
 import Darwin
 import Foundation
+import os
 
 struct LocalForward: Codable, Equatable {
     let localPort: UInt16
@@ -66,6 +67,8 @@ final class RemoteTunnel: ObservableObject {
     private var work: Task<Void, Never>?
     private var process: Process?
     private var controlSocket: String?
+    /// The private directory holding the current connection's control socket and SSH log.
+    private var directory: URL?
     private var reconciling = false
     private var reconcilePending = false
 
@@ -93,10 +96,10 @@ final class RemoteTunnel: ObservableObject {
     }
 
     /// Called after every refresh of the remote host with the ports its running containers publish.
+    /// Kept before `start` too, so a check that lands first isn't lost until the next one.
     func publish(_ ports: [UInt16: String]) {
-        guard enabled else { return }
         if ports != published { published = ports }
-        sync()
+        if enabled { sync() }
     }
 
     /// Keeps one SSH connection open while there is anything to forward, and its
@@ -108,6 +111,8 @@ final class RemoteTunnel: ObservableObject {
             work?.cancel()
             work = nil
             if let process, process.isRunning { process.terminate() }
+            // The connection's own cleanup never runs when this is the app quitting.
+            if let directory { try? FileManager.default.removeItem(at: directory) }
             status = .off
             active = []
             blocked = [:]
@@ -185,7 +190,7 @@ final class RemoteTunnel: ObservableObject {
 
     private func connect() async -> String {
         // Keep the path short enough for OpenSSH's temporary Unix socket name.
-        let directory = URL(fileURLWithPath: "/tmp/ColimaDock-\(UUID().uuidString)", isDirectory: true)
+        let directory = URL(fileURLWithPath: Self.directoryPrefix + UUID().uuidString, isDirectory: true)
         let socket = directory.appendingPathComponent("ctl").path
         let log = directory.appendingPathComponent("ssh.log")
         let files = FileManager.default
@@ -195,7 +200,11 @@ final class RemoteTunnel: ObservableObject {
         } catch {
             return error.localizedDescription
         }
-        defer { try? files.removeItem(at: directory) }
+        self.directory = directory
+        defer {
+            try? files.removeItem(at: directory)
+            if self.directory == directory { self.directory = nil }
+        }
 
         do {
             guard files.createFile(atPath: log.path, contents: nil) else { return "Could not capture SSH errors" }
@@ -253,5 +262,68 @@ final class RemoteTunnel: ObservableObject {
         guard let data = try? reader.read(upToCount: 4096) else { return nil }
         let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty ? nil : message
+    }
+}
+
+// MARK: - Leftovers from an earlier ColimaDock
+
+extension RemoteTunnel {
+    /// Each connection's private directory is this prefix and a UUID.
+    nonisolated static let directoryPrefix = "/tmp/ColimaDock-"
+
+    /// The control socket a ColimaDock tunnel master was started with, read from its argv;
+    /// nil for any other process, including the short-lived `ssh -O` clients that share it.
+    nonisolated static func controlSocket(argv: [String]) -> String? {
+        guard let executable = argv.first, (executable as NSString).lastPathComponent == "ssh",
+              argv.contains("-N"), argv.contains("-M"),
+              let flag = argv.firstIndex(of: "-S"), argv.indices.contains(flag + 1) else { return nil }
+        let socket = argv[flag + 1]
+        guard (socket as NSString).lastPathComponent == "ctl" else { return nil }
+        return ownDirectory((socket as NSString).deletingLastPathComponent) == nil ? nil : socket
+    }
+
+    /// `path` when it is one of ColimaDock's connection directories.
+    nonisolated static func ownDirectory(_ path: String) -> String? {
+        guard path.hasPrefix(directoryPrefix),
+              UUID(uuidString: String(path.dropFirst(directoryPrefix.count))) != nil else { return nil }
+        return path
+    }
+
+    /// Stops tunnel masters whose ColimaDock is gone (killed or crashed, so launchd adopted
+    /// them) and removes connection directories no live master uses. Masters still owned by a
+    /// running ColimaDock are left alone, and so is a directory too new to have its master yet
+    /// unless it was the master just stopped here.
+    nonisolated static func stopLeftovers() async {
+        let logger = Logger(subsystem: "dev.joon.ColimaDock", category: "cleanup")
+        var inUse = Set<String>()
+        var freed = Set<String>()
+        for info in ProcessTable.ownProcesses() where ProcessTable.command(of: info) == "ssh" {
+            let pid = info.kp_proc.p_pid
+            guard let argv = ProcessTable.arguments(of: pid), let socket = controlSocket(argv: argv) else { continue }
+            let directory = (socket as NSString).deletingLastPathComponent
+            guard ProcessTable.parent(of: info) == 1 else { inUse.insert(directory); continue }
+            let host = argv.last ?? "?"
+            if let failure = await ProcessTable.stop(pid: pid, startTime: ProcessTable.startTime(of: info)) {
+                logger.error("Leftover SSH tunnel to \(host, privacy: .public) (pid \(pid)) not stopped: \(failure, privacy: .public)")
+                inUse.insert(directory)
+            } else {
+                freed.insert(directory)
+                logger.notice("Stopped leftover SSH tunnel to \(host, privacy: .public) (pid \(pid), \(socket, privacy: .public))")
+            }
+        }
+        let files = FileManager.default
+        let parent = (directoryPrefix as NSString).deletingLastPathComponent
+        let settled = Date().addingTimeInterval(-OrphanedProcessScanner.minimumAge)
+        for name in (try? files.contentsOfDirectory(atPath: parent)) ?? [] {
+            guard let directory = ownDirectory("\(parent)/\(name)"), !inUse.contains(directory),
+                  freed.contains(directory) || ((try? files.attributesOfItem(atPath: directory))?[.creationDate] as? Date)
+                    .map({ $0 < settled }) == true else { continue }
+            do {
+                try files.removeItem(atPath: directory)
+                logger.notice("Removed leftover tunnel directory \(directory, privacy: .public)")
+            } catch {
+                logger.error("Leftover tunnel directory \(directory, privacy: .public) not removed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }
