@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+Remote containers' ports on this Mac, like a local VM.
+
+- **Published ports are forwarded automatically.** A port a remote container publishes appears on the same port on this Mac's `localhost` and goes away when the container stops, the way a local Colima VM forwards ports. One SSH connection per remote carries them all.
+- A port already in use on this Mac is left alone and marked **⚠︎ in use on this Mac** in the menu; it's retried on every check.
+- Container and connection submenus list what's forwarded: `localhost:5432 → postgres`.
+- **Localhost forwards** are now **Extra forwards**, for remapped ports and non-Docker services. They take priority over a published port on the same local number.
+- Remote connections show the same status dots as containers: **●** online, **○** stopped, **⚠︎** SSH, Colima or Docker not answering.
+- The **Sparky** preset now fills in `default`: Sparky runs a single VM.
+
 ## 0.2.1
 
 - Fixed: the 0.2.0 download contained the 0.1.0 app, so it had no remote hosts. Swift 6.4 moved where universal builds are written, and the build script copied a stale binary from the old location. It now asks SwiftPM for the path and refuses a binary missing either architecture.

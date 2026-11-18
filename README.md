@@ -27,7 +27,7 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 - Refreshes the local profile every 5 seconds
 - Shows remote Colima profiles and their containers in a separate menu for each connection
 - Checks remote inventories about every 20 seconds, backs off after connection failures, and samples remote container stats on request
-- Keeps optional localhost port forwards connected while ColimaDock is running
+- Forwards the ports remote containers publish to the same port on this Mac's `localhost`, like a local Colima VM, while ColimaDock is running
 - Can route Terminal Docker commands to a preferred remote and fall back to this Mac
 
 ## What it does not do
@@ -41,15 +41,19 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 
 ## Remote Colima
 
-Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `offload`, Sparky's everyday VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch: Sparky's `big` VM is a second connection with the same host. A profile that isn't running shows as **Stopped**. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
+Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `default`, Sparky's one VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch. A profile that isn't running shows as **Stopped**. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
 
-Enter `29120:19120` in **Localhost forwards** to map this Mac's port 29120 to
-the remote Mac's port 19120. Add more pairs separated by commas. ColimaDock
-starts the tunnel when it opens, retries after a disconnect, and releases the
-ports when it quits or you clear the field. Add ColimaDock to macOS Login Items
-if you want your forwards to come up when you sign in.
+### Ports
 
-The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover. Sparky's VMs belong to its `worker` account and are started and switched with `make sparky` (everyday `offload`) and `make sparky-big` (`big`) from the `sparky-vm` tool.
+A port a remote container publishes shows up on the same port on this Mac's `localhost`, the way a local Colima VM does it: `docker --context sparky run -p 5432:5432 postgres` gives you `localhost:5432` here. Forwards follow the containers, appearing within about 20 seconds of a start and closing after a stop, over one SSH connection per remote. Each container's submenu and the connection's submenu list them. A port something on this Mac already uses is left alone and marked **⚠︎ … in use on this Mac**; it's retried on every check, so it takes over once the port is free.
+
+For anything else, such as a remote port under a different local number or a service outside Docker, enter pairs in **Extra forwards**: `29120:19120` maps this Mac's port 29120 to the remote host's port 19120. These win over a published port with the same local number.
+
+Forwards run while ColimaDock does. Add it to macOS Login Items if you want them up when you sign in.
+
+### Sparky
+
+Sparky's one VM belongs to its `worker` account and runs while `worker` is logged in on its screen. `make sparky` in the `sparky-vm` tool sets it up and points the `sparky` Docker context at it.
 
 ### Prefer a remote Docker host
 
