@@ -98,6 +98,7 @@ final class RemoteColima: ObservableObject {
     @Published private(set) var operationError: String?
     @Published private(set) var lastOnline: Date?
     @Published private(set) var statsAt: Date?
+    @Published private(set) var statsError: String?
     @Published private(set) var isActing = false
 
     private let runner: Runner
@@ -108,6 +109,12 @@ final class RemoteColima: ObservableObject {
     private var actionVersion = 0
     private var nextRefresh = Date.distantPast
     private var failures = 0
+    /// When the last check began, so opening the menu can tell whether it is current.
+    private var checkedAt = Date.distantPast
+    /// The next check also samples CPU and memory of the running containers.
+    private var statsWanted = false
+    /// Opening the menu re-checks a remote whose last check began longer ago than this.
+    static let menuFreshness: TimeInterval = 10
 
     var titleStatus: String {
         if state == .profileUnavailable, let vm { return vm.status.displayName }
@@ -138,7 +145,10 @@ final class RemoteColima: ObservableObject {
 
     deinit { timer?.invalidate() }
 
-    func refresh() {
+    /// Re-checks now, ignoring the schedule and any failure backoff. `withStats` also samples
+    /// the running containers' CPU and memory, which takes Docker a couple of seconds.
+    func refresh(withStats: Bool = false) {
+        if withStats { statsWanted = true }
         guard !isRefreshing, !isActing else { refreshPending = true; return }
         isRefreshing = true
         Task {
@@ -162,25 +172,15 @@ final class RemoteColima: ObservableObject {
             if result.exitCode != 0 {
                 operationError = "\(start ? "Start" : "Stop") not confirmed: \(detail(result))"
             }
-            finishAction(refreshAfter: true)
+            finishAction()
         }
     }
 
-    func sampleStats() {
-        let ids = containers.filter { $0.state.isRunning }.map(\.id)
-        guard state == .ready, !isActing, !ids.isEmpty, let socket = dockerSocket else { return }
-        beginAction()
-        Task {
-            let result = await docker(["stats", "--no-stream", "--format", "{{json .}}"] + ids, socket: socket)
-            if result.exitCode == 0 {
-                let stats = ColimaRuntime.parseStats(result.output)
-                applyStats(stats, to: &containers)
-                statsAt = Date()
-            } else {
-                operationError = "Stats unavailable: \(detail(result))"
-            }
-            finishAction(refreshAfter: false)
-        }
+    /// The menu is opening: bring what it shows up to date, stats included, unless the
+    /// last check is recent. The open menu can't change, so this shows on the next open.
+    func menuWillOpen(now: Date = Date()) {
+        guard now.timeIntervalSince(checkedAt) >= Self.menuFreshness else { return }
+        refresh(withStats: true)
     }
 
     private func beginAction() {
@@ -189,15 +189,15 @@ final class RemoteColima: ObservableObject {
         operationError = nil
     }
 
-    private func finishAction(refreshAfter: Bool) {
+    /// Re-checks right after an action to show its result.
+    private func finishAction() {
         isActing = false
-        if refreshAfter || refreshPending {
-            refreshPending = false
-            refresh()
-        }
+        refreshPending = false
+        refresh()
     }
 
     private func readSnapshot(version: Int) async {
+        checkedAt = Date()
         let list = await run(["colima", "list", "--json"])
         guard version == actionVersion else { refreshPending = true; return }
         guard list.exitCode == 0 else { return failed(.colimaUnavailable, list, vm: nil) }
@@ -219,9 +219,25 @@ final class RemoteColima: ObservableObject {
             if $0.state.isRunning != $1.state.isRunning { return $0.state.isRunning }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
-        applyStats(Dictionary(uniqueKeysWithValues: containers.compactMap { container in
-            container.stats.map { (container.id, $0) }
-        }), to: &updated)
+        let running = updated.filter { $0.state.isRunning }.map(\.id)
+        if statsWanted, !running.isEmpty {
+            let sample = await docker(["stats", "--no-stream", "--format", "{{json .}}"] + running, socket: socket)
+            guard version == actionVersion else { refreshPending = true; return }
+            statsWanted = false
+            if sample.exitCode == 0 {
+                applyStats(ColimaRuntime.parseStats(sample.output), to: &updated)
+                statsAt = Date()
+                statsError = nil
+            } else {
+                statsError = "Stats unavailable: \(detail(sample))"
+            }
+        } else {
+            // Keep the last sample until the next one; its time is shown beside it.
+            statsWanted = false
+            applyStats(Dictionary(uniqueKeysWithValues: containers.compactMap { container in
+                container.stats.map { (container.id, $0) }
+            }), to: &updated)
+        }
         vm = profile
         dockerSocket = socket
         containers = updated
@@ -241,6 +257,9 @@ final class RemoteColima: ObservableObject {
         tunnel.publish([:])
         dockerSocket = nil
         statsAt = nil
+        statsError = nil
+        // Asked for while unreachable; the next menu open asks again.
+        statsWanted = false
         error = result.map(detail)
         failures = min(failures + 1, 3)
         nextRefresh = Date().addingTimeInterval(failure == .profileUnavailable ? 20 : [30, 60, 120][failures - 1])

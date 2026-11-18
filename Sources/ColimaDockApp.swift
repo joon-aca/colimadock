@@ -20,7 +20,7 @@ enum ColimaDockMain {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct Target {
         let remote: RemoteColima
         let containerID: String
@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenu() {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
 
         addSectionHeader("This Mac", to: menu)
         addLocalProfile(runtime, to: menu)
@@ -147,9 +148,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         addOrphanedProcessItems(to: menu)
 
+        // Each remote is its own section, laid out like a local profile under This Mac.
+        for remote in remotes {
+            menu.addItem(.separator())
+            addRemoteSection(remote, to: menu)
+        }
+
         menu.addItem(.separator())
-        if !remotes.isEmpty { addSectionHeader("Remote Hosts", to: menu) }
-        for remote in remotes { menu.addItem(remoteMenuItem(remote)) }
         addAction("Add Remote Colima…", #selector(addRemoteHost), to: menu)
         if !remotes.isEmpty { menu.addItem(dockerCommandsMenuItem()) }
 
@@ -164,6 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    /// Opening the menu is the moment to catch remotes up; see `RemoteColima.menuWillOpen`.
+    func menuWillOpen(_ menu: NSMenu) {
+        remotes.forEach { $0.menuWillOpen() }
     }
 
     private func dockerCommandsMenuItem() -> NSMenuItem {
@@ -293,6 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let stats = container.stats {
             submenu.addItem(NSMenuItem.separator())
+            // Remote stats are a sample from the last menu open or Refresh, not live.
+            if let sampled = remote?.statsAt {
+                addDisabledItem("Stats from \(sampled.formatted(date: .omitted, time: .standard))", to: submenu)
+            }
             addDisabledItem("CPU: \(stats.cpuPercent)", to: submenu)
             addDisabledItem("Memory: \(stats.memoryUsage) (\(stats.memoryPercent))", to: submenu)
             addDisabledItem("Network: \(stats.networkIO)", to: submenu)
@@ -365,7 +379,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func remoteMenuItem(_ remote: RemoteColima) -> NSMenuItem {
+    /// A remote's VM and containers at the top level, as `addLocalProfile` shows a local one,
+    /// with the connection's details and actions in one submenu like `VM Controls`.
+    private func addRemoteSection(_ remote: RemoteColima, to menu: NSMenu) {
+        addSectionHeader(remote.host.name, to: menu)
+        addDisabledItem("\(remote.host.profile) VM", to: menu)
+        if remote.state != .ready {
+            // A failure gets the warning mark so it doesn't read as merely stopped.
+            let title = remote.state.isFailure ? "⚠︎ \(remote.titleStatus)" : remote.titleStatus
+            addDisabledItem(title, to: menu, detail: remote.error)
+        } else if remote.containers.isEmpty {
+            addDisabledItem("No containers found", to: menu)
+        } else {
+            for container in remote.containers { menu.addItem(menuItem(for: container, remote: remote)) }
+        }
+        for error in [remote.operationError, remote.statsError].compactMap({ $0 }) {
+            addDisabledItem("⚠︎ \(shortError(error))", to: menu, detail: error)
+        }
+        if case .retrying(let error) = remote.tunnel.status, !remote.tunnel.wanted.isEmpty {
+            addDisabledItem("⚠︎ Ports on this Mac offline • retrying", to: menu, detail: error)
+        }
+        menu.addItem(remoteControlsMenuItem(remote))
+    }
+
+    private func remoteControlsMenuItem(_ remote: RemoteColima) -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         addDisabledItem("Status: \(remote.titleStatus)", to: submenu)
@@ -376,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let last = remote.lastOnline, remote.state != .ready {
             addDisabledItem("Last online: \(last.formatted(date: .abbreviated, time: .shortened))", to: submenu)
         }
-        for error in [remote.error, remote.operationError].compactMap({ $0 }) {
+        for error in [remote.error, remote.operationError, remote.statsError].compactMap({ $0 }) {
             addDisabledItem(shortError(error), to: submenu, detail: error)
         }
         let wanted = remote.tunnel.wanted
@@ -393,32 +430,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 addDisabledItem(shortError(error), to: submenu, detail: error)
             }
         }
-        if remote.state == .ready {
-            submenu.addItem(.separator())
-            if remote.containers.isEmpty {
-                addDisabledItem("No containers found", to: submenu)
-            } else {
-                for container in remote.containers { submenu.addItem(menuItem(for: container, remote: remote)) }
-            }
-        }
         submenu.addItem(.separator())
-        if let last = remote.statsAt {
-            addDisabledItem("Stats sampled at \(last.formatted(date: .omitted, time: .standard))", to: submenu)
-        }
-        addAction("Check Now", #selector(refreshRemote(_:)), to: submenu, representedBy: remote)
-        if remote.state == .ready, remote.containers.contains(where: { $0.state.isRunning }) {
-            addAction("Sample CPU & Memory", #selector(sampleRemoteStats(_:)), to: submenu,
-                      representedBy: remote, enabled: !remote.isActing)
-        }
         addAction("Edit Connection…", #selector(editRemoteHost(_:)), to: submenu,
                   representedBy: remote, enabled: !remote.isActing)
         addAction("Forget Connection", #selector(forgetRemoteHost(_:)), to: submenu,
                   representedBy: remote, enabled: !remote.isActing)
 
-        // Same dots as containers; a failure gets the warning mark so it doesn't read as merely stopped.
-        let icon = remote.state.isFailure ? "⚠︎" : statusDot(remote.state == .ready)
-        let item = NSMenuItem(title: "\(icon) \(remote.host.name)", action: nil, keyEquivalent: "")
-        item.toolTip = remote.titleStatus
+        let item = NSMenuItem(title: "Connection Controls", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
     }
@@ -553,15 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func refreshStatus() {
         runtime.refresh()
         localProfiles.values.forEach { $0.refresh() }
-        remotes.forEach { $0.refresh() }
-    }
-
-    @objc private func refreshRemote(_ sender: NSMenuItem) {
-        (sender.representedObject as? RemoteColima)?.refresh()
-    }
-
-    @objc private func sampleRemoteStats(_ sender: NSMenuItem) {
-        (sender.representedObject as? RemoteColima)?.sampleStats()
+        remotes.forEach { $0.refresh(withStats: true) }
     }
 
     @objc private func addRemoteHost() { editConnection(nil) }

@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app for the thing you probably actually care about in Colima: the Docker containers.
 
-ColimaDock groups local containers by profile under **This Mac** and shows configured remote connections under **Remote Hosts**. Open any container in the menu to start or stop it.
+ColimaDock groups local containers by profile under **This Mac** and gives each remote connection its own section, named after it, laid out the same way. Open any container in the menu to start or stop it.
 
 ## Why another Colima menu bar app?
 
@@ -20,13 +20,13 @@ ColimaDock is built around that second question. The VM is treated as the runtim
 
 - Shows Docker containers from the default Colima VM and discovers other local Docker profiles, such as `komodo-dev`
 - Starts and stops individual containers
-- Shows snapshot container stats for running containers in the default local profile and on demand for remote profiles
+- Shows snapshot container stats for running containers in the default local profile, and for remote profiles each time you open the menu
 - Starts and stops the default Colima VM from a secondary menu
 - Detects stale Lima disk locks left by a killed VM (the "in use by instance" start failure) and clears them, on its own or as part of starting
 - Spots leftover Colima/Lima background processes that nothing tracks anymore (their pid file is gone) and stops them
 - Refreshes the local profile every 5 seconds
-- Shows remote Colima profiles and their containers in a separate menu for each connection
-- Checks remote inventories about every 20 seconds, backs off after connection failures, and samples remote container stats on request
+- Lists each remote connection's containers at the top level, like a local profile, with its details and actions under **Connection Controls**
+- Checks remote inventories about every 20 seconds and backs off after connection failures. Opening the menu re-checks any remote not checked in the last 10 seconds and samples its containers' CPU and memory; the menu can't change while it's open, so the result shows the next time you open it
 - Forwards the ports remote containers publish to the same port on this Mac's `localhost`, like a local Colima VM, while ColimaDock is running
 - Can route Terminal Docker commands to a preferred remote and fall back to this Mac
 
@@ -41,11 +41,11 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 
 ## Remote Colima
 
-Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `default`, Sparky's one VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch. A profile that isn't running shows as **Stopped**. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
+Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `default`, Sparky's one VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch. A profile that isn't running shows as **Stopped**. **Save** adds a section for the connection and keeps it across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
 
 ### Ports
 
-A port a remote container publishes shows up on the same port on this Mac's `localhost`, the way a local Colima VM does it: `docker --context sparky run -p 5432:5432 postgres` gives you `localhost:5432` here. Forwards follow the containers, appearing within about 20 seconds of a start and closing after a stop, over one SSH connection per remote. Each container's submenu and the connection's submenu list them. A port something on this Mac already uses is left alone and marked **⚠︎ … in use on this Mac**; it's retried on every check, so it takes over once the port is free.
+A port a remote container publishes shows up on the same port on this Mac's `localhost`, the way a local Colima VM does it: `docker --context sparky run -p 5432:5432 postgres` gives you `localhost:5432` here. Forwards follow the containers, appearing within about 20 seconds of a start and closing after a stop, over one SSH connection per remote. Each container's submenu and **Connection Controls** list them. A port something on this Mac already uses is left alone and marked **⚠︎ … in use on this Mac**; it's retried on every check, so it takes over once the port is free.
 
 For anything else, such as a remote port under a different local number or a service outside Docker, enter pairs in **Extra forwards**: `29120:19120` maps this Mac's port 29120 to the remote host's port 19120. These win over a published port with the same local number.
 
