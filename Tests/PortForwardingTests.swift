@@ -48,4 +48,28 @@ final class PortForwardingTests: XCTestCase {
         close(fd)
         XCTAssertFalse(RemoteTunnel.localPortInUse(port))
     }
+
+    func testPortsPublishedBeforeTheTunnelStartsAreKept() throws {
+        let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "sparky-local", profile: "default"))
+        let tunnel = RemoteTunnel(host: host)
+        tunnel.publish([5432: "postgres"])
+        XCTAssertEqual(tunnel.wanted.map(\.label), ["5432:5432"])
+        XCTAssertEqual(tunnel.status, .off, "nothing connects until start")
+    }
+
+    func testRecognizesOnlyColimaDockTunnelMasters() {
+        let socket = "/tmp/ColimaDock-6F80436A-067B-45B0-8890-D19CBA3BE073/ctl"
+        let master = ["/usr/bin/ssh", "-nT", "-o", "BatchMode=yes", "-N", "-M", "-S", socket,
+                      "-o", "ControlPersist=no", "--", "worker@sparky-local"]
+        XCTAssertEqual(RemoteTunnel.controlSocket(argv: master), socket)
+
+        let client = ["/usr/bin/ssh", "-F", "/dev/null", "-S", socket, "-O", "forward", "-L", "x", "--", "sparky-local"]
+        XCTAssertNil(RemoteTunnel.controlSocket(argv: client), "mux clients aren't masters")
+        XCTAssertNil(RemoteTunnel.controlSocket(argv: ["/usr/bin/ssh", "-N", "-M", "-S", "/tmp/other/ctl", "host"]),
+                     "someone else's control socket")
+        XCTAssertNil(RemoteTunnel.controlSocket(argv: ["/usr/bin/ssh", "-N", "-M", "-S", "/tmp/ColimaDock-nope/ctl", "host"]),
+                     "the directory must end in a UUID")
+        XCTAssertNil(RemoteTunnel.controlSocket(argv: ["/usr/bin/ssh", "-N", "-M", "-S"]))
+        XCTAssertNil(RemoteTunnel.controlSocket(argv: ["/bin/sleep", "-N", "-M", "-S", socket]))
+    }
 }

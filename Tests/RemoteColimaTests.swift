@@ -49,6 +49,43 @@ final class RemoteColimaTests: XCTestCase {
         XCTAssertNil(remote.operationError)
     }
 
+    private let runningContainer = CommandResult(output: """
+        {"ID":"0123456789abcdef","Names":"komodo-core","State":"running","Status":"Up 2 hours"}
+        """, exitCode: 0)
+
+    @MainActor
+    func testOpeningTheMenuChecksAndSamplesStatsUnlessJustChecked() async throws {
+        let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "sparky-local", profile: "komodo-dev"))
+        let stats = CommandResult(output: """
+            {"ID":"0123456789ab","CPUPerc":"3.10%","MemUsage":"512MiB / 10GiB","MemPerc":"5.00%"}
+            """, exitCode: 0)
+        let ssh = SSH([profileList, customSocket, runningContainer, stats])
+        let remote = RemoteColima(host: host, runner: { args, _ in await ssh.run(args) })
+        remote.menuWillOpen()
+        try await waitFor { remote.statsAt != nil }
+        XCTAssertEqual(remote.containers.first?.stats?.cpuPercent, "3.10%")
+        let commands = await ssh.commands
+        XCTAssertTrue(commands[3].last?.contains("'stats' '--no-stream'") == true)
+
+        remote.menuWillOpen()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let afterReopen = await ssh.commands
+        XCTAssertEqual(afterReopen.count, 4, "a menu reopened right after a check doesn't check again")
+    }
+
+    @MainActor
+    func testFailedStatsSampleWarnsButKeepsTheRemoteOnline() async throws {
+        let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "sparky-local", profile: "komodo-dev"))
+        let ssh = SSH([profileList, customSocket, runningContainer, .init(output: "stats timed out", exitCode: 1)])
+        let remote = RemoteColima(host: host, runner: { args, _ in await ssh.run(args) })
+        remote.refresh(withStats: true)
+        try await waitFor { remote.statsError != nil }
+        XCTAssertEqual(remote.state, .ready)
+        XCTAssertEqual(remote.containers.map(\.name), ["komodo-core"])
+        XCTAssertEqual(remote.statsError, "Stats unavailable: stats timed out")
+        XCTAssertNil(remote.statsAt)
+    }
+
     @MainActor
     func testLostSSHDisablesActionsAndClearsOnlineInventory() async throws {
         let host = try XCTUnwrap(RemoteHost(name: "Sparky", alias: "sparky-local", profile: "komodo-dev"))
