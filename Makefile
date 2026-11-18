@@ -19,7 +19,7 @@ run: app
 	-pkill -x ColimaDock
 	open ColimaDock.app
 
-release:
+release: test
 	Scripts/release.sh "$(VERSION)"
 
 clean:
