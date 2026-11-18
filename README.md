@@ -41,7 +41,7 @@ At least for now, it is intentionally just a small status-and-start/stop tool.
 
 ## Remote Colima
 
-Choose **Add Remote Colima…** and select **Sparky** to fill in `sparky-local` and `komodo-dev`. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local`, and the remote Colima profile. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
+Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `offload`, Sparky's everyday VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch: Sparky's `big` VM is a second connection with the same host. A profile that isn't running shows as **Stopped**. **Save** keeps the connection under **Remote Hosts** across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
 
 Enter `29120:19120` in **Localhost forwards** to map this Mac's port 29120 to
 the remote Mac's port 19120. Add more pairs separated by commas. ColimaDock
@@ -49,7 +49,7 @@ starts the tunnel when it opens, retries after a disconnect, and releases the
 ports when it quits or you clear the field. Add ColimaDock to macOS Login Items
 if you want your forwards to come up when you sign in.
 
-The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover.
+The [Sparky runbook](docs/sparky.md) covers setup, Docker contexts, localhost forwards, restart behavior, and cutover. Sparky's VMs belong to its `worker` account and are started and switched with `make sparky` (everyday `offload`) and `make sparky-big` (`big`) from the `sparky-vm` tool.
 
 ### Prefer a remote Docker host
 
@@ -79,14 +79,14 @@ Download the latest `ColimaDock-x.y.z.zip` from [Releases](https://github.com/jo
 make run
 ```
 
-Builds `ColimaDock.app` for this Mac and launches it. The app is a plain SwiftPM/AppKit menu bar app. No Electron, no background service, no special permissions dance.
+Runs the tests in debug and release, builds `ColimaDock.app` for this Mac, and launches it. The tests run in release too because the shipped app is a release build, and a release-only miscompile once rejected every remote host while the debug tests passed. The app is a plain SwiftPM/AppKit menu bar app. No Electron, no background service, no special permissions dance.
 
 ## Release
 
 ```bash
-make release VERSION=0.1.0
+make release VERSION=0.2.0
 ```
 
-Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.1.0`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.1.0` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
+Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.2.0`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.2.0` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
 
 One-time setup: notarization credentials live in your keychain, never in the repo. `make release` prints the exact `xcrun notarytool store-credentials` command if they are missing.
