@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var menuUpdateQueued = false
     private var signalSources: [DispatchSourceSignal] = []
     private var leftoverTunnelsStopped = false
+    private lazy var aboutPanel = AboutPanel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runtime = ColimaRuntime()
@@ -164,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(refreshItem)
 
         menu.addItem(NSMenuItem.separator())
+        addAction("About ColimaDock", #selector(showAboutPanel), to: menu)
         let quitItem = NSMenuItem(title: "Quit ColimaDock", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -659,6 +661,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             UserDefaults.standard.set(data, forKey: RemoteHost.defaultsKey)
         }
         requestMenuUpdate()
+    }
+
+    @objc private func showAboutPanel() {
+        NSApp.activate(ignoringOtherApps: true)
+        aboutPanel.makeKeyAndOrderFront(nil)
     }
 
     @objc private func quitApp() {
