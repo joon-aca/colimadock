@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- **About ColimaDock** in the menu bar shows the installed version and build, copyright, and quick-start tips for managing local containers, connecting to remote Colima hosts, and routing Docker commands. It also links to the full user guide.
+
 ## 0.4.0
 
 Remote hosts as easy to manage as this Mac.
