@@ -1,96 +1,78 @@
 # ColimaDock
 
-A tiny macOS menu bar app for the thing you probably actually care about in Colima: the Docker containers.
-
-ColimaDock groups local containers by profile under **This Mac** and gives each remote connection its own section, named after it, laid out the same way. Open any container in the menu to start or stop it.
-
-## Why another Colima menu bar app?
-
-Colima is great. Menu bar apps are great. But the existing lightweight options tend to answer one question:
-
-> Is the Colima VM running?
-
-That is useful, but it is not the whole story. Most of the time the question is:
-
-> Is my Redis/Postgres/API container actually running?
-
-ColimaDock is built around that second question. The VM is treated as the runtime, not the main character. If the default Colima VM is stopped, ColimaDock lets you start it. Once it is running, the menu becomes a container list.
-
-## What it does
-
-- Shows Docker containers from the default Colima VM and discovers other local Docker profiles, such as `komodo-dev`
-- Starts and stops individual containers
-- Shows snapshot container stats for running containers in the default local profile, and for remote profiles each time you open the menu
-- Starts and stops the default Colima VM from a secondary menu
-- Detects stale Lima disk locks left by a killed VM (the "in use by instance" start failure) and clears them, on its own or as part of starting
-- Spots leftover Colima/Lima background processes that nothing tracks anymore (their pid file is gone) and stops them
-- Refreshes the local profile every 5 seconds
-- Lists each remote connection's containers at the top level, like a local profile, with its details and actions under **Connection Controls**
-- Checks remote inventories about every 20 seconds and backs off after connection failures. Opening the menu re-checks any remote not checked in the last 10 seconds and samples its containers' CPU and memory; the menu can't change while it's open, so the result shows the next time you open it
-- Forwards the ports remote containers publish to the same port on this Mac's `localhost`, like a local Colima VM, while ColimaDock is running
-- Can route Terminal Docker commands to a preferred remote and fall back to this Mac
-
-## What it does not do
-
-- Start or stop non-default VMs
-- Replace Docker Desktop
-- Delete containers, images, or volumes
-- Open logs or shells
-
-At least for now, it is intentionally just a small status-and-start/stop tool.
-
-## Remote Colima
-
-Choose **Add Remote Colima…** and select **Sparky** to fill in `worker@sparky-local` and `default`, Sparky's one VM. For another machine, enter a name, an SSH alias or hostname such as `office-mac.local` (as `user@host` to log in as another account), and the remote Colima profile. Add one connection per profile you want to watch. A profile that isn't running shows as **Stopped**. **Save** adds a section for the connection and keeps it across launches. The alias or hostname must already work over the LAN or private network with `BatchMode=yes`. Verify and trust a new host's SSH key once in Terminal.
-
-### Ports
-
-A port a remote container publishes shows up on the same port on this Mac's `localhost`, the way a local Colima VM does it: `docker --context sparky run -p 5432:5432 postgres` gives you `localhost:5432` here. Forwards follow the containers, appearing within about 20 seconds of a start and closing after a stop, over one SSH connection per remote. Each container's submenu and **Connection Controls** list them. A port something on this Mac already uses is left alone and marked **⚠︎ … in use on this Mac**; it's retried on every check, so it takes over once the port is free.
-
-For anything else, such as a remote port under a different local number or a service outside Docker, enter pairs in **Extra forwards**: `29120:19120` maps this Mac's port 29120 to the remote host's port 19120. These win over a published port with the same local number.
-
-Forwards run while ColimaDock does. Add it to macOS Login Items if you want them up when you sign in.
-
-### Sparky
-
-Sparky's one VM belongs to its `worker` account and runs while `worker` is logged in on its screen. `make sparky` in the `sparky-vm` tool sets it up and points the `sparky` Docker context at it.
-
-### Prefer a remote Docker host
-
-Under **Docker Commands**, pick a saved remote and choose **Copy Docker Command Prefix**. In Terminal, paste the prefix and add a command such as `ps` or `compose up -d`. For an app in `/Applications`, the full command looks like this:
-
-```bash
-/Applications/ColimaDock.app/Contents/MacOS/ColimaDock docker -- ps
-```
-
-The launcher checks Docker on the preferred host first, then checks the Colima profile with the **same name** on this Mac. It prints its choice to stderr and runs the command once on that engine. Use `docker --target` to check which host the launcher would pick, or `docker --remote -- …` and `docker --local -- …` to require one host. These options follow the `ColimaDock` executable path.
-
-The launcher doesn't change Docker's current context or start either VM. Start the local profile yourself if you need it while the remote is away. To leave the MacBook's resources free in the office, keep the local copy of that workload stopped. Containers, named volumes, and published ports stay with their own engines; remote bind mounts use paths on the remote host. Use `--remote` or `--local` for a series of commands that must all use the same data. Separate builders selected explicitly with Buildx have their own targets.
-
-## Requirements
-
-- macOS 13.0+
-- [Colima](https://github.com/abiosoft/colima)
-- Docker CLI configured for Colima
+ColimaDock is a macOS menu bar app for Docker containers running in Colima. See which containers are running, start and stop them, and check resource usage on this Mac or another Mac over SSH. ColimaDock can also make remote container services available on your own `localhost`.
 
 ## Install
 
-Download the latest `ColimaDock-x.y.z.zip` from [Releases](https://github.com/joon-aca/colimadock/releases), unzip it, and drag `ColimaDock.app` to `/Applications`. Releases are universal (Apple Silicon + Intel), signed with Developer ID, and notarized, so it opens without Gatekeeper complaints.
+1. On macOS 13 or later, download the latest `ColimaDock-x.y.z.zip` from [GitHub Releases](https://github.com/joon-aca/colimadock/releases).
+2. Unzip the download, move **ColimaDock.app** to **Applications**, and open it.
+3. Click the shipping box icon in the menu bar. In version 0.4.1 or later, choose **About ColimaDock** for the installed version and quick-start help.
 
-## Build
+GitHub release builds are signed, notarized, and work on Apple Silicon and Intel Macs.
 
-```bash
-make run
+## Manage containers on this Mac
+
+Install [Colima](https://github.com/abiosoft/colima) and the Docker CLI on this Mac. Under **This Mac**, ColimaDock groups containers by their Colima Docker profile. Open a container’s submenu to see its status and published ports or to start or stop it. Running containers in the default profile also show CPU and memory snapshots.
+
+Use **VM Controls (default)** to start or stop the default Colima VM. If a stale Lima disk lock blocks startup, this menu offers to clear the lock. Use the Colima CLI to start or stop other VMs, and the Docker CLI to create containers, view logs, or open a shell.
+
+## Connect to another Mac
+
+The remote Mac needs SSH access, Colima, and the Docker CLI. Connect as the account that owns the Colima profile, and start that profile with the Docker runtime. ColimaDock uses direct SSH over a reachable network, such as a LAN or private VPN, with a trusted host key and authentication that works without an interactive prompt.
+
+1. On this Mac, save the remote host and account under one name by adding an entry to `~/.ssh/config`. Replace the values below with your own.
+
+   ```sshconfig
+   Host build-mac
+       HostName build-mac.local
+       User dev
+   ```
+
+2. Run `ssh build-mac` in Terminal once. Verify the host’s fingerprint before trusting it, and set up key-based authentication if needed. Confirm that the login works without prompting.
+
+   ```sh
+   ssh -o BatchMode=yes -o StrictHostKeyChecking=yes build-mac true
+   ```
+
+3. In ColimaDock, choose **Add Remote Colima…**. If there’s a **Server** picker, select **Custom server**. Enter a display **Name**, the **SSH host**, and the **Colima profile**. For example, use `Build Mac`, `build-mac`, and `default`. The menu also accepts a hostname or `user@host`.
+4. Choose **Save**. The connection gets its own menu section and is restored when you reopen ColimaDock. You can add one connection per host and profile combination.
+
+Open a container in the remote section to start or stop it on that host. Use **Connection Controls** to see connection and forwarding status, edit the host or profile, or forget the connection. If you see a warning, check the details there and confirm that the profile is running under the SSH account you configured.
+
+ColimaDock checks healthy connections about every 20 seconds. Opening the menu requests a fresh check and CPU and memory snapshots if the previous check was at least 10 seconds ago. Choose **Refresh** (⌘R) to request a check and stats for every remote. Reopen the menu to see the results. The **Stats from** timestamp shows when the sample was taken.
+
+## Access remote services on localhost
+
+While ColimaDock is running, it forwards TCP ports published by running remote containers to the same ports on this Mac. For example, if a web app publishes port `8080` on the remote Mac, open `http://localhost:8080` on this Mac. The forward follows the container as it starts and stops.
+
+Use **Connection Controls → Edit Connection… → Extra forwards** to use a different local port or reach a service on the remote host’s loopback address. For example, `18080:8080` maps local port `18080` to remote port `8080`. Separate multiple mappings with commas. Local ports in this field must be between 1024 and 65535. An extra forward takes precedence over automatic forwarding on the same local port.
+
+If a local port is already taken, **Connection Controls** shows it as **in use on this Mac**. ColimaDock retries on subsequent checks. Forwards are bound to this Mac’s loopback interface and close when you quit ColimaDock.
+
+## Run Docker commands in Terminal
+
+With Docker CLI installed on this Mac, open **Docker Commands** in ColimaDock, choose a saved remote, and select **Copy Docker Command Prefix**. Paste the prefix into Terminal and append a command such as `ps`. For an app in **Applications**, the result looks like this:
+
+```sh
+/Applications/ColimaDock.app/Contents/MacOS/ColimaDock docker -- ps
 ```
 
-Runs the tests in debug and release, builds `ColimaDock.app` for this Mac, and launches it. The tests run in release too because the shipped app is a release build, and a release-only miscompile once rejected every remote host while the debug tests passed. The app is a plain SwiftPM/AppKit menu bar app. No Electron, no background service, no special permissions dance.
+The launcher checks Docker on the preferred remote first. If that engine is unavailable, it tries a running Colima profile with the same name on this Mac. It prints the chosen target and runs the command once.
 
-## Release
+In ColimaDock 0.4.1, use an SSH alias with a `User` entry in `~/.ssh/config` to route Docker commands through a specific SSH account.
 
-```bash
-make release VERSION=0.2.1
-```
+Pass these options after `docker` in the ColimaDock command:
 
-Builds a universal binary, signs it with your Developer ID (hardened runtime), notarizes and staples it, zips it, tags `v0.2.1`, pushes, and publishes the GitHub release with a SHA-256. It refuses to run off a dirty or stale `master`, or without a `## 0.2.1` section in `CHANGELOG.md` (that section becomes the release notes). If publishing fails after tagging, re-running resumes.
+| Arguments | What they do |
+| --- | --- |
+| `--target` | Print the target ColimaDock would choose. |
+| `--remote -- ps` | Run `ps` on the preferred remote only. |
+| `--local -- ps` | Run `ps` on the matching local profile only. |
 
-One-time setup: notarization credentials live in your keychain, never in the repo. `make release` prints the exact `xcrun notarytool store-credentials` command if they are missing.
+Use a single target for a series of commands that need the same containers or volumes. Containers and volumes stay on the engine where you create them, and remote bind mounts refer to paths on the remote host.
+
+## Build from source
+
+On a Mac with the Swift toolchain and Xcode command-line tools, run `make app` to test and build `ColimaDock.app` for this Mac. Run `make test` to run just the debug and release tests. Use `make run` to build and launch the app, replacing any running ColimaDock instance.
+
+For maintainers, `make release VERSION=x.y.z` builds a universal app, signs it with Developer ID, notarizes it, and publishes a tagged GitHub release. The script requires a clean, up-to-date `master`, a matching [changelog](CHANGELOG.md) entry, a Developer ID signing identity, a configured `notarytool` keychain profile, and an authenticated GitHub CLI.
