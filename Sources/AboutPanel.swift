@@ -57,7 +57,7 @@ private struct AboutContent: View {
             )
             feature(
                 "Connect to remote Colima", symbol: "server.rack",
-                detail: "Choose **Add Remote Colima…** and enter a trusted SSH host and Colima profile. Published ports forward to `localhost` while ColimaDock runs."
+                detail: "Choose **Add Remote Colima…** and enter a trusted SSH host and Colima profile. Start, stop, or restart the remote VM, and reach published ports on `localhost` while it runs."
             )
             feature(
                 "Run Docker commands on a remote", symbol: "terminal",

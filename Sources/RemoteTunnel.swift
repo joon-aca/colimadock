@@ -61,6 +61,7 @@ final class RemoteTunnel: ObservableObject {
     @Published private(set) var blocked: [UInt16: String] = [:]
     /// Ports running containers publish on the remote host, by port, with the container's name.
     @Published private(set) var published: [UInt16: String] = [:]
+    @Published private var forwardingAllowed = true
 
     private let host: RemoteHost
     private var enabled = false
@@ -82,7 +83,9 @@ final class RemoteTunnel: ObservableObject {
             .map { LocalForward(localPort: $0, remotePort: $0) }
     }
 
-    var wanted: [LocalForward] { Self.plan(configured: host.forwards ?? [], published: published) }
+    var wanted: [LocalForward] {
+        forwardingAllowed ? Self.plan(configured: host.forwards ?? [], published: published) : []
+    }
 
     func start() {
         enabled = true
@@ -97,7 +100,11 @@ final class RemoteTunnel: ObservableObject {
 
     /// Called after every refresh of the remote host with the ports its running containers publish.
     /// Kept before `start` too, so a check that lands first isn't lost until the next one.
-    func publish(_ ports: [UInt16: String]) {
+    /// Change `forwardingAllowed` only when the VM is confirmed running or stopped.
+    func publish(_ ports: [UInt16: String], forwardingAllowed: Bool? = nil) {
+        if let forwardingAllowed, forwardingAllowed != self.forwardingAllowed {
+            self.forwardingAllowed = forwardingAllowed
+        }
         if ports != published { published = ports }
         if enabled { sync() }
     }

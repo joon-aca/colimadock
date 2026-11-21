@@ -383,10 +383,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A remote's VM and containers at the top level, as `addLocalProfile` shows a local one,
     /// with the connection's details and actions in one submenu like `VM Controls`.
-    private func addRemoteSection(_ remote: RemoteColima, to menu: NSMenu) {
+    func addRemoteSection(_ remote: RemoteColima, to menu: NSMenu) {
         addSectionHeader(remote.host.name, to: menu)
         addDisabledItem("\(remote.host.profile) VM", to: menu)
-        if remote.state != .ready {
+        if remote.isTransitioningVM {
+            addDisabledItem(remote.titleStatus, to: menu)
+        } else if remote.state != .ready {
             // A failure gets the warning mark so it doesn't read as merely stopped.
             let title = remote.state.isFailure ? "⚠︎ \(remote.titleStatus)" : remote.titleStatus
             addDisabledItem(title, to: menu, detail: remote.error)
@@ -401,15 +403,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if case .retrying(let error) = remote.tunnel.status, !remote.tunnel.wanted.isEmpty {
             addDisabledItem("⚠︎ Ports on this Mac offline • retrying", to: menu, detail: error)
         }
+        // Surface recovery directly in the section when the VM isn't online; keep Stop/Restart
+        // tucked inside Connection Controls when containers are running.
+        if remote.canStartVM {
+            addAction("Start \(remote.host.profile) VM", #selector(startRemoteVM(_:)), to: menu, representedBy: remote)
+        } else if remote.state != .ready, remote.canRestartVM {
+            addAction("Restart \(remote.host.profile) VM…", #selector(restartRemoteVM(_:)), to: menu, representedBy: remote)
+        }
         menu.addItem(remoteControlsMenuItem(remote))
     }
 
-    private func remoteControlsMenuItem(_ remote: RemoteColima) -> NSMenuItem {
+    func remoteControlsMenuItem(_ remote: RemoteColima) -> NSMenuItem {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         addDisabledItem("Status: \(remote.titleStatus)", to: submenu)
         addDisabledItem("SSH: \(remote.host.alias) • Profile: \(remote.host.profile)", to: submenu)
-        if let vm = remote.vm {
+        if let vm = remote.vm, vm.status != .missing {
             addDisabledItem("VM: \(vm.status.displayName) • \(vm.cpus) CPUs • \(vm.memoryFormatted) RAM", to: submenu)
         }
         if let last = remote.lastOnline, remote.state != .ready {
@@ -433,6 +442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         submenu.addItem(.separator())
+        addRemoteLifecycleItems(for: remote, to: submenu)
+        submenu.addItem(.separator())
         addAction("Edit Connection…", #selector(editRemoteHost(_:)), to: submenu,
                   representedBy: remote, enabled: !remote.isActing)
         addAction("Forget Connection", #selector(forgetRemoteHost(_:)), to: submenu,
@@ -441,6 +452,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: "Connection Controls", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
+    }
+
+    private func addRemoteLifecycleItems(for remote: RemoteColima, to submenu: NSMenu) {
+        let profile = remote.host.profile
+        if remote.isTransitioningVM {
+            addDisabledItem(remote.titleStatus, to: submenu)
+        } else if remote.isActing {
+            addDisabledItem("Working…", to: submenu)
+        } else if remote.canStartVM {
+            addAction("Start \(profile) VM", #selector(startRemoteVM(_:)), to: submenu, representedBy: remote)
+        } else if remote.canStopVM {
+            addAction("Restart \(profile) VM…", #selector(restartRemoteVM(_:)), to: submenu, representedBy: remote)
+            addAction("Stop \(profile) VM…", #selector(stopRemoteVM(_:)), to: submenu, representedBy: remote)
+        } else {
+            let reason: String
+            switch remote.state {
+            case .checking:
+                reason = "Checking SSH…"
+            case .unreachable:
+                reason = "VM controls unavailable while SSH is offline"
+            case .colimaUnavailable:
+                reason = "VM controls unavailable without Colima"
+            case .profileUnavailable:
+                reason = "Profile \(profile) not found in Colima"
+            case .stopped, .dockerUnavailable, .ready:
+                reason = "No VM action available"
+            }
+            addDisabledItem(reason, to: submenu)
+        }
     }
 
     private func defaultVMMenuItem() -> NSMenuItem {
@@ -574,6 +614,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.refresh()
         localProfiles.values.forEach { $0.refresh() }
         remotes.forEach { $0.refresh(withStats: true) }
+    }
+
+    static func lifecycleConfirmationAlert(for host: RemoteHost, stop: Bool) -> NSAlert {
+        let alert = NSAlert()
+        let verb = stop ? "Stop" : "Restart"
+        alert.messageText = "\(verb) \(host.profile) VM on \(host.name)?"
+        alert.informativeText = stop
+            ? "Stopping the \"\(host.profile)\" Colima profile on \(host.name) (\(host.alias)) stops its running containers and closes its forwarded ports on this Mac."
+            : "Restarting the \"\(host.profile)\" Colima profile on \(host.name) (\(host.alias)) interrupts running containers and active connections while Colima restarts."
+        let confirm = alert.addButton(withTitle: "\(verb) \(host.profile) VM")
+        if stop { confirm.hasDestructiveAction = true }
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
+    @objc private func startRemoteVM(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima,
+              remotes.contains(where: { $0 === remote }),
+              remote.canStartVM else { return }
+        remote.startVM()
+    }
+
+    @objc private func stopRemoteVM(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima,
+              remotes.contains(where: { $0 === remote }),
+              remote.canStopVM else { return }
+        let alert = Self.lifecycleConfirmationAlert(for: remote.host, stop: true)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn,
+              remotes.contains(where: { $0 === remote }),
+              remote.canStopVM else { return }
+        remote.stopVM()
+    }
+
+    @objc private func restartRemoteVM(_ sender: NSMenuItem) {
+        guard let remote = sender.representedObject as? RemoteColima,
+              remotes.contains(where: { $0 === remote }),
+              remote.canRestartVM else { return }
+        let alert = Self.lifecycleConfirmationAlert(for: remote.host, stop: false)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn,
+              remotes.contains(where: { $0 === remote }),
+              remote.canRestartVM else { return }
+        remote.restartVM()
     }
 
     @objc private func addRemoteHost() { editConnection(nil) }
