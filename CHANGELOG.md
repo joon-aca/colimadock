@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Start, stop, or restart a saved remote Colima profile from the menu bar. Stop and Restart ask for confirmation and show the target Mac and profile.
+- Start and Restart wait for Docker to respond before marking the profile online. Starting a profile preserves its saved Colima settings.
+- A confirmed stop closes the profile’s local port forwards. Extra forwards can still reach the remote Mac over SSH when Docker is unavailable.
+
 ## 0.4.1
 
 - **About ColimaDock** in the menu bar shows the installed version and build, copyright, and quick-start tips for managing local containers, connecting to remote Colima hosts, and routing Docker commands. It also links to the full user guide.

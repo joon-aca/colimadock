@@ -127,9 +127,15 @@ before calling the setup permanent, since recreating a container discards
 runtime-only changes. Keep one-shot migrations and test fixtures on demand.
 Test workload readiness after every planned VM restart.
 
-For maintenance, use `launchctl bootout "gui/$(id -u)/$label"` before stopping
-the profile. Check `colima status --profile komodo-dev`, and stop the profile
-normally if it is still running. Use `bootstrap` again to restart supervision.
+ColimaDock can start, stop, or restart a remote profile from **Connection
+Controls** (or directly from the remote section when stopped or when Docker is
+unresponsive). Because the example LaunchAgent sets `KeepAlive` to `true`,
+`launchd` restarts `komodo-dev` 30 seconds after a manual stop unless you
+unload supervision first. Use `RunAtLoad` without `KeepAlive` if you only want
+Colima started at login and want stops from ColimaDock to persist. For
+supervised maintenance, run `launchctl bootout "gui/$(id -u)/$label"` before
+stopping the profile, check `colima status --profile komodo-dev`, and use
+`bootstrap` again to resume supervision.
 Logs are in `~/Library/Logs/sparky-komodo-dev.log`. Check log sizes and free
 disk; keep Compose definitions in Git and back up durable data separately.
 
